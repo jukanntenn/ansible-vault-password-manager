@@ -272,10 +272,8 @@ impl App {
             KeyCode::Backspace => {
                 self.search.pop();
             }
-            KeyCode::Char(c) => {
-                if !c.is_control() {
-                    self.search.push(c);
-                }
+            KeyCode::Char(c) if !c.is_control() => {
+                self.search.push(c);
             }
             _ => {}
         }

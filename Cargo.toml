@@ -31,9 +31,13 @@ serde_json = "1"
 # === System keyring ===
 keyring = { version = "4", features = ["v1"] }
 # Direct access to the Secret Service session collection (master-passphrase
-# cache). Both crates are already in the dependency tree via
-# `keyring`; declaring them directly lets master.rs use their types.
-secret-service = "5"
+# cache). Both crates are already in the dependency tree via `keyring`;
+# declaring them directly lets master.rs use their types. `rt-async-io-crypto-rust`
+# is required: on macOS nothing else enables a zbus runtime feature (keyring's
+# zbus store is Linux-only) and zbus fails to compile without "async-io" or
+# "tokio". The async-io runtime also avoids tokio-nested-runtime panics in the
+# blocking Secret Service calls.
+secret-service = { version = "5", features = ["rt-async-io-crypto-rust"] }
 zvariant = "5"
 
 # === Encrypted sync (age) ===
@@ -75,7 +79,7 @@ proptest = "1"
 # For binary-level acceptance tests: seed/clean the real Secret Service
 # session collection exactly like `avpm unlock` does (same versions as the
 # normal dependencies, zero new downloads).
-secret-service = "5"
+secret-service = { version = "5", features = ["rt-async-io-crypto-rust"] }
 zvariant = "5"
 
 [features]
