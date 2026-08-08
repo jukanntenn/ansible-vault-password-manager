@@ -1,6 +1,6 @@
 //! Shared helpers for binary-level acceptance tests.
 //!
-//! Provides: isolated XDG dirs per test, config-file writing, and
+//! Provides: isolated config/data dirs per test, config-file writing, and
 //! snapshot/seed/restore of the real Secret Service session-collection cache
 //! that `avpm unlock` populates (binary tests exercise the production
 //! `avpm-master`/`master` entry; helpers restore whatever was there before so
@@ -9,7 +9,7 @@
 #![allow(dead_code)] // each consumer uses a subset
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use assert_cmd::prelude::*;
@@ -21,16 +21,35 @@ pub fn avpm() -> Command {
     Command::cargo_bin("avpm").expect("avpm binary built")
 }
 
-/// Point `cmd` at isolated XDG dirs so it can never touch the developer's
-/// real `~/.local/share/avpm` / `~/.config/avpm`.
+/// Point `cmd` at isolated dirs so it can never touch the developer's real
+/// `~/.local/share/avpm` / `~/.config/avpm`.
+///
+/// The `dirs` crate honors `XDG_*` on Linux but on macOS only `$HOME` (via
+/// `~/Library/Application Support`), so redirect both.
 pub fn isolate(cmd: &mut Command, dir: &Path) {
     cmd.env("XDG_DATA_HOME", dir.join("data"))
         .env("XDG_CONFIG_HOME", dir.join("config"));
+    #[cfg(target_os = "macos")]
+    {
+        cmd.env("HOME", dir.join("home"));
+    }
 }
 
-/// Write `<xdg-config>/avpm/config.toml` for the test.
+/// Base dir under which avpm looks for its config on this platform.
+fn config_base(dir: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        dir.join("home").join("Library").join("Application Support")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        dir.join("config")
+    }
+}
+
+/// Write `<config-base>/avpm/config.toml` for the test.
 pub fn write_config(dir: &Path, toml: &str) {
-    let path = dir.join("config").join("avpm");
+    let path = config_base(dir).join("avpm");
     std::fs::create_dir_all(&path).unwrap();
     std::fs::write(path.join("config.toml"), toml).unwrap();
 }

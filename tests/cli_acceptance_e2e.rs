@@ -12,9 +12,9 @@
 //!    `git clone` sees `vault.age` (F4) → second device pull/list/status →
 //!    non-interactive `get` (ansible contract). The cache is snapshotted and
 //!    restored so a dev's active unlock is never clobbered.
-//! 3. **Interactive `avpm unlock`** (needs `script` pty wrapper): the exact
-//!    A1/A3 prompt flows must succeed with the "unlocked ... cached for this
-//!    session" message and no warning.
+//! 3. **Interactive `avpm unlock`** (needs the util-linux `script` pty
+//!    wrapper; BSD/macOS `script` does not forward piped stdin the same way,
+//!    so this case is Linux-only).
 
 mod common;
 
@@ -249,6 +249,10 @@ fn acceptance_flow_set_push_clone_pull_status() {
 // 3. Interactive `avpm unlock` — pty wrapper required.
 // ---------------------------------------------------------------------------
 
+/// Run `cmd` under the util-linux `script` pty wrapper, feeding `input` on
+/// stdin. Linux-only: BSD/macOS `script` does not forward piped stdin the way
+/// this flow needs.
+#[cfg(target_os = "linux")]
 fn script_pipe(cmd: &mut StdCommand, input: &str) -> std::process::Output {
     use std::io::Write;
     use std::process::Stdio;
@@ -273,6 +277,10 @@ fn script_pipe(cmd: &mut StdCommand, input: &str) -> std::process::Output {
     child.wait_with_output().unwrap()
 }
 
+/// Interactive `avpm unlock` over a pty (util-linux `script`). Linux-only:
+/// BSD `script` doesn't forward piped stdin, and the flow is the headless
+/// WSL2 story anyway.
+#[cfg(target_os = "linux")]
 #[test]
 fn unlock_interactive_flow() {
     let _guard = cache_test_lock();
