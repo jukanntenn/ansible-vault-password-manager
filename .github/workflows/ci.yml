@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    # Weekly audit cron (see `10` §3, `11` §6).
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      # `testing` feature exposes MockStore/MockBackend for integration tests;
+      # the default `cargo test` skips `#[ignore]` real-keyring/git tests.
+      - name: cargo test (skip ignored)
+        run: cargo test --features testing --verbose
+
+  lint:
+    name: Lint (fmt + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets --features testing -- -D warnings
+
+  audit:
+    name: Supply-chain (cargo audit + cargo deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-deny
+      - uses: taiki-e/install-action@cargo-audit
+      - name: cargo audit
+        run: cargo audit
+      - name: cargo deny
+        run: cargo deny check
+
+  ignored-tests:
+    name: Real-system tests (keyring + git)
+    runs-on: ubuntu-latest
+    # Manual / nightly only — needs a D-Bus session and an unlocked keyring.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Start D-Bus / GNOME Keyring session
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnome-keyring dbus-x11
+          eval $(dbus-launch --sh-syntax)
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> $GITHUB_ENV
+          echo "DISPLAY=$DISPLAY" >> $GITHUB_ENV
+          # Unlock the default keyring with a blank password so Secret Service works.
+          gnome-keyring-daemon --start --components=secrets --unlock < /dev/null || true
+      # Full suite: with a live Secret Service daemon the session-collection
+      # integration tests and the binary-level acceptance tests (which
+      # runtime-skip in the daemon-less main job) really execute here.
+      - name: cargo test (full suite with live daemon)
+        run: cargo test --features testing --nocapture
+      - name: cargo test --ignored (legacy real-keyring)
+        run: cargo test --features testing -- --ignored --nocapture

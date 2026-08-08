@@ -1,0 +1,85 @@
+[package]
+name = "avpm"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Ansible Vault Password Manager - a minimal system keyring adapter with end-to-end encrypted sync"
+license = "MIT"
+authors = ["avpm contributors"]
+repository = "https://github.com/jukanntenn/ansible-vault-password-manager"
+readme = "README.md"
+keywords = ["ansible", "vault", "password", "keyring", "cli"]
+categories = ["command-line-utilities", "cryptography"]
+
+[[bin]]
+name = "avpm"
+path = "src/main.rs"
+
+[lib]
+name = "avpm"
+path = "src/lib.rs"
+
+[dependencies]
+# === CLI parsing ===
+clap = { version = "4.5", features = ["derive"] }
+
+# === Config loading ===
+config = { version = "0.15", default-features = false, features = ["toml"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# === System keyring ===
+keyring = { version = "4", features = ["v1"] }
+# Direct access to the Secret Service session collection (master-passphrase
+# cache). Both crates are already in the dependency tree via
+# `keyring`; declaring them directly lets master.rs use their types.
+secret-service = "5"
+zvariant = "5"
+
+# === Encrypted sync (age) ===
+age = { version = "0.12", features = ["armor"] }
+
+# === WebDAV backend ===
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+# === TUI ===
+ratatui = "0.30"
+crossterm = "0.29"
+tui-input = { version = "0.15", features = ["crossterm"] }
+arboard = "3"
+
+# === Async runtime ===
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process"] }
+
+# === Logging (high observability) ===
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# === Error handling ===
+thiserror = "2"
+anyhow = "1"
+
+# === Utilities ===
+dirs = "6"
+rpassword = "7"
+zeroize = "1"
+jiff = { version = "0.2", features = ["serde"] }
+rand = "0.8"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+trycmd = "0.15"
+proptest = "1"
+# For binary-level acceptance tests: seed/clean the real Secret Service
+# session collection exactly like `avpm unlock` does (same versions as the
+# normal dependencies, zero new downloads).
+secret-service = "5"
+zvariant = "5"
+
+[features]
+default = []
+# Exposes MockStore / MockBackend for integration tests in `tests/`. The binary
+# does not enable this; it's a dev-only affordance.
+testing = []

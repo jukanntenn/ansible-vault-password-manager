@@ -1,0 +1,5 @@
+# `avpm --vault-id <id>` (ansible client form) routes to get; fails nonzero
+# without a keyring but must accept the flag.
+bin.name = "avpm"
+args = ["--vault-id", "nonexistent-xyz"]
+status = "failed"

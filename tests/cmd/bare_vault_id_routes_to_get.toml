@@ -1,0 +1,4 @@
+# `avpm <vault-id>` routes to get; with no keyring the process fails (nonzero).
+bin.name = "avpm"
+args = "definitely-nonexistent-xyz"
+status = "failed"
