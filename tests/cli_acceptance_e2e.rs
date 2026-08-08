@@ -23,9 +23,10 @@ use std::process::Command as StdCommand;
 
 use assert_cmd::prelude::*;
 
+#[cfg(target_os = "linux")]
+use common::script_available;
 use common::{
-    avpm, cache_test_lock, isolate, restore_cache, script_available, seed_cache, snapshot_cache,
-    write_config,
+    avpm, cache_test_lock, isolate, restore_cache, seed_cache, snapshot_cache, write_config,
 };
 
 const MASTER_PW: &str = "master123";
