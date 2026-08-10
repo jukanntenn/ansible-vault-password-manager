@@ -2,7 +2,7 @@
 name = "avpm"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.88"
 description = "Ansible Vault Password Manager - a minimal system keyring adapter with end-to-end encrypted sync"
 license = "MIT"
 authors = ["avpm contributors"]
@@ -10,10 +10,19 @@ repository = "https://github.com/jukanntenn/ansible-vault-password-manager"
 readme = "README.md"
 keywords = ["ansible", "vault", "password", "keyring", "cli"]
 categories = ["command-line-utilities", "cryptography"]
+# Single integration test binary (ripgrep-style): every file under `tests/` is
+# a module declared by `tests/main.rs`, so the whole suite compiles once and
+# shares `tests/common/mod.rs`. `autotests = false` disables cargo's default of
+# treating each `tests/*.rs` as a separate test binary.
+autotests = false
 
 [[bin]]
 name = "avpm"
 path = "src/main.rs"
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"
 
 [lib]
 name = "avpm"

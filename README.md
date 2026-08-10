@@ -41,9 +41,50 @@ machines using age-encrypted manifests over Git or WebDAV backends.
 | macOS | Keychain Services via `keyring` v1's apple-native backend |
 | Windows | **Not supported** (Ansible itself doesn't run on Windows) |
 
-For WSL2, enable systemd in `/etc/wsl.conf` and install `gnome-keyring`.
+For WSL2 / headless Linux, see the [WSL2 setup](#wsl2--headless-linux-setup)
+section below.
+
+## WSL2 / Headless Linux setup
+
+On WSL2 and other headless Linux systems without a desktop environment, the
+Secret Service daemon (`gnome-keyring`) is usually not installed. Without it,
+avpm falls back to the encrypted file store and **cannot cache** the master
+passphrase across processes — meaning you'll be re-prompted every time, and
+Ansible's non-interactive calls (`avpm --vault-id <id>`) will fail with exit
+code 5.
+
+To fix this, install and enable the Secret Service daemon:
+
+```bash
+# 1. Install the packages (Debian/Ubuntu)
+sudo apt-get update
+sudo apt-get install -y gnome-keyring dbus-x11 libsecret-tools
+
+# 2. Enable systemd in WSL2 — add to /etc/wsl.conf:
+#    [boot]
+#    systemd=true
+# Then from Windows PowerShell:  wsl --shutdown   (and reopen WSL)
+
+# 3. Verify
+gdbus call --session \
+  --dest org.freedesktop.DBus \
+  --object-path /org/freedesktop/DBus \
+  --method org.freedesktop.DBus.ListActivatableNames \
+  | tr ',' '\n' | grep secret
+# expected: 'org.freedesktop.secrets'
+```
+
+Once the daemon is reachable, `avpm unlock` caches the master passphrase in
+the session collection (non-persistent, no GUI required) and subsequent
+`avpm` calls — including Ansible's `avpm --vault-id <id>` — work without
+prompting.
+
+See [`docs/troubleshooting.md`](docs/troubleshooting.md) for full diagnostics,
+the session cache explanation, and alternative headless workarounds.
 
 ## Install
+
+**Requires Rust ≥ 1.88** ([rustup](https://rustup.rs) recommended: `rustup update stable`).
 
 ```bash
 cargo install --git https://github.com/jukanntenn/ansible-vault-password-manager --locked

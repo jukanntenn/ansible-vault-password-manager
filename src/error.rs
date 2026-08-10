@@ -60,3 +60,52 @@ impl Error {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Exit-code mapping matrix (see module docs).
+    //!
+    //! The full error→exit-code contract, including the ansible-critical
+    //! distinction between "vault-id absent" (exit 2) and "file store locked"
+    //! (exit 5) so non-interactive callers can tell them apart.
+
+    use super::Error;
+    use crate::config::ConfigError;
+    use crate::sync::SyncError;
+    use crate::vault::VaultError;
+
+    #[test]
+    fn vault_not_found_maps_to_exit_2() {
+        assert_eq!(
+            Error::Vault(VaultError::NotFound("dev".into())).exit_code(),
+            2
+        );
+    }
+
+    #[test]
+    fn config_error_maps_to_exit_3() {
+        assert_eq!(
+            Error::Config(ConfigError::Invalid("bad".into())).exit_code(),
+            3
+        );
+    }
+
+    #[test]
+    fn store_decrypt_maps_to_exit_4() {
+        // age::DecryptError isn't trivially constructible, but
+        // VaultError::StoreDecrypt routes through the same exit-code arm.
+        assert_eq!(Error::Vault(VaultError::StoreDecrypt).exit_code(), 4);
+    }
+
+    #[test]
+    fn locked_maps_to_exit_5() {
+        // Distinct from exit 2 so ansible/non-interactive callers can tell
+        // "locked" from "vault-id absent".
+        assert_eq!(Error::Vault(VaultError::Locked).exit_code(), 5);
+    }
+
+    #[test]
+    fn generic_fallback_maps_to_exit_1() {
+        assert_eq!(Error::Sync(SyncError::NotConfigured).exit_code(), 1);
+    }
+}

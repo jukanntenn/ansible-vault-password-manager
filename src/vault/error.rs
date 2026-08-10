@@ -67,26 +67,39 @@ pub enum VaultError {
     },
 }
 
-/// User-facing hint for resolving keyring unavailability on Linux / WSL2.
+/// User-facing hint for resolving Secret Service unavailability on Linux / WSL2.
 ///
-/// `gnome-keyring-daemon --start` only *starts* the daemon; it does not create
-/// or unlock the `login` collection. On a fresh WSL2 / headless box the
-/// `login` collection does not exist yet, and GNOME Keyring requires a GUI
-/// prompt to create/unlock it — so `--start` alone never makes writes succeed.
-/// The advice below walks the user through the two working paths.
+/// Two distinct failure modes exist, and they need different fixes:
+///
+/// 1. **No Secret Service daemon at all** — the D-Bus error
+///    `org.freedesktop.DBus.Error.ServiceUnknown: The name
+///    org.freedesktop.secrets was not provided by any .service files` means no
+///    package has registered the `org.freedesktop.secrets` D-Bus service.
+///    Install `gnome-keyring` (it ships the `.service` file that lets D-Bus
+///    auto-start `gnome-keyring-daemon`).
+///
+/// 2. **Daemon present but `login` collection missing/locked** — GNOME Keyring
+///    needs a GUI prompt to create or unlock the `login` collection. On a
+///    headless box that prompt never appears, so the collection stays absent.
+///    The session collection (non-persistent, no GUI) is an alternative that
+///    avpm uses for its master-passphrase cache.
+///
+/// See `docs/troubleshooting.md` for the full walkthrough.
 #[must_use]
 pub fn keyring_hint() -> &'static str {
-    "The OS keyring (Secret Service) is not ready: the `login` collection is\n\
-     missing or locked, and GNOME Keyring needs a GUI prompt to create/unlock it.\n\n\
-     Fix (pick one):\n\n\
-     1. With WSLg / a GUI (recommended, persistent):\n      \
-        sudo apt-get install -y gnome-keyring libsecret-tools seahorse && \\\n      \
-        echo -n x | secret-tool store --label=init service avpm vault-id init\n      \
-        (a dialog appears to set the keyring password; create it once)\n\n\
-     2. Headless, no GUI (temporary, lost on WSL restart):\n      \
-        gdbus call --session --dest org.freedesktop.secrets \\\n      \
-          --object-path /org/freedesktop/secrets \\\n      \
-          --method org.freedesktop.Secret.Service.SetAlias \\\n      \
-          default /org/freedesktop/secrets/collection/session\n\n\
-     WSL2 also needs systemd enabled in /etc/wsl.conf and `dbus-x11` installed."
+    "The OS keyring (Secret Service) is unavailable on this system.\n\n\
+     Common causes and fixes:\n\n\
+     1. Secret Service daemon not installed (error: \"The name\n\
+        org.freedesktop.secrets was not provided by any .service files\"):\n\n\
+        sudo apt-get install -y gnome-keyring dbus-x11 libsecret-tools\n\
+        (then restart your session / WSL so systemd + D-Bus pick it up)\n\n\
+     2. WSL2 without systemd:\n\n\
+        Ensure /etc/wsl.conf contains:\n\
+          [boot]\n\
+          systemd=true\n\
+        Then run `wsl --shutdown` from Windows and reopen.\n\n\
+     3. Daemon present but login collection locked (needs a GUI):\n\n\
+        Install seahorse and unlock once via the GUI, or use the headless\n\
+        session-collection workaround described in docs/troubleshooting.md.\n\n\
+     See docs/troubleshooting.md for full diagnostics and step-by-step setup."
 }

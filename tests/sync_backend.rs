@@ -1,4 +1,4 @@
-//! Sync end-to-end flow over the **real git backend**.
+//! Sync backend integration against the **real git backend**.
 //!
 //! Drives [`avpm::sync::SyncEngine`] in-process with a `MockStore` and a real
 //! `GitBackend` pointed at a temp bare repo — the acceptance F1-F6 flow

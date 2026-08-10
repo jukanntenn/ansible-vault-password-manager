@@ -1,0 +1,6 @@
+bin.name = "avpm"
+args = "config path"
+stdout = """
+[..]/avpm[..]/config.toml
+"""
+stderr = ""

@@ -29,9 +29,46 @@ avpm 将每个 Vault 密码存入操作系统原生 keyring（macOS 钥匙串 / 
 | macOS | Keychain Services，经 `keyring` v1 的 apple-native 后端 |
 | Windows | **不支持**（Ansible 本身不运行在 Windows 上） |
 
-WSL2 需在 `/etc/wsl.conf` 中启用 systemd 并安装 `gnome-keyring`。
+WSL2 / 无头 Linux 环境请参考下方的 [WSL2 环境配置](#wsl2--无头-linux-环境配置)章节。
+
+## WSL2 / 无头 Linux 环境配置
+
+在没有桌面环境的 WSL2 或其他无头 Linux 系统上，Secret Service 守护进程
+（`gnome-keyring`）通常未安装。缺少它时，avpm 会回退到加密文件存储，且
+**无法跨进程缓存**主口令——这意味着每次都要重新输入，Ansible 的非交互式调用
+（`avpm --vault-id <id>`）会以退出码 5 失败。
+
+要解决此问题，请安装并启用 Secret Service 守护进程：
+
+```bash
+# 1. 安装所需软件包（Debian/Ubuntu）
+sudo apt-get update
+sudo apt-get install -y gnome-keyring dbus-x11 libsecret-tools
+
+# 2. 在 WSL2 中启用 systemd —— 在 /etc/wsl.conf 中添加：
+#    [boot]
+#    systemd=true
+# 然后在 Windows PowerShell 中执行：  wsl --shutdown   （之后重新打开 WSL）
+
+# 3. 验证
+gdbus call --session \
+  --dest org.freedesktop.DBus \
+  --object-path /org/freedesktop/DBus \
+  --method org.freedesktop.DBus.ListActivatableNames \
+  | tr ',' '\n' | grep secret
+# 预期输出：'org.freedesktop.secrets'
+```
+
+守护进程可用后，`avpm unlock` 会将主口令缓存到 session collection
+（非持久化，无需 GUI），后续的 `avpm` 调用——包括 Ansible 的
+`avpm --vault-id <id>`——无需提示即可正常工作。
+
+完整的诊断步骤、session cache 说明和无头环境替代方案请参见
+[`docs/troubleshooting.md`](docs/troubleshooting.md)。
 
 ## 安装
+
+**需要 Rust ≥ 1.88**（推荐使用 [rustup](https://rustup.rs)：`rustup update stable`）。
 
 ```bash
 cargo install --git https://github.com/jukanntenn/ansible-vault-password-manager --locked

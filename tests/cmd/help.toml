@@ -1,0 +1,13 @@
+bin.name = "avpm"
+args = "--help"
+stdout = """
+Ansible Vault Password Manager — a minimal keyring adapter with encrypted sync
+
+Usage: avpm[EXE] [OPTIONS] [COMMAND]
+
+Commands:
+...
+Options:
+...
+"""
+stderr = ""

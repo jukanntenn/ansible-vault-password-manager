@@ -6,8 +6,6 @@
 //! `avpm-master`/`master` entry; helpers restore whatever was there before so
 //! a dev's active unlock is never clobbered).
 
-#![allow(dead_code)] // each consumer uses a subset
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -52,11 +50,6 @@ pub fn write_config(dir: &Path, toml: &str) {
     let path = config_base(dir).join("avpm");
     std::fs::create_dir_all(&path).unwrap();
     std::fs::write(path.join("config.toml"), toml).unwrap();
-}
-
-/// Is a Secret Service daemon reachable? (runtime-skip gate)
-pub fn session_daemon_available() -> bool {
-    secret_service::blocking::SecretService::connect(secret_service::EncryptionType::Dh).is_ok()
 }
 
 fn session_collection<'s>(
@@ -139,6 +132,7 @@ pub fn restore_cache(previous: Option<String>) {
 
 /// Is `script` (pty wrapper) available? (runtime-skip gate for the
 /// interactive-unlock test; works on util-linux and BSD.)
+#[cfg(target_os = "linux")]
 pub fn script_available() -> bool {
     Command::new("script")
         .args(["-q", "/dev/null", "true"])

@@ -1,5 +1,4 @@
-//! Binary-level acceptance tests for the file-backend + sync flows (the A- and
-//! F-series from the WSL2 acceptance cheatsheet).
+//! End-to-end acceptance through the real `avpm` binary.
 //!
 //! Three kinds of coverage:
 //!
@@ -16,16 +15,14 @@
 //!    wrapper; BSD/macOS `script` does not forward piped stdin the same way,
 //!    so this case is Linux-only).
 
-mod common;
-
 use std::path::Path;
 use std::process::Command as StdCommand;
 
 use assert_cmd::prelude::*;
 
 #[cfg(target_os = "linux")]
-use common::script_available;
-use common::{
+use crate::common::script_available;
+use crate::common::{
     avpm, cache_test_lock, isolate, restore_cache, seed_cache, snapshot_cache, write_config,
 };
 
@@ -46,6 +43,18 @@ fn bare_repo(dir: &Path) -> std::path::PathBuf {
         .output()
         .unwrap();
     bare
+}
+
+/// Run `avpm` with isolated XDG dirs in one call.
+trait PipeCmd {
+    fn pipe_cmd(&mut self, dir: &Path) -> &mut Self;
+}
+
+impl PipeCmd for StdCommand {
+    fn pipe_cmd(&mut self, dir: &Path) -> &mut Self {
+        isolate(self, dir);
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -329,16 +338,4 @@ fn unlock_interactive_flow() {
     );
 
     restore_cache(previous);
-}
-
-/// Small extension: run `avpm` with isolated XDG envs in one call.
-trait PipeCmd {
-    fn pipe_cmd(&mut self, dir: &Path) -> &mut Self;
-}
-
-impl PipeCmd for StdCommand {
-    fn pipe_cmd(&mut self, dir: &Path) -> &mut Self {
-        isolate(self, dir);
-        self
-    }
 }
