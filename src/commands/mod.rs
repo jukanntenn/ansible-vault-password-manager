@@ -27,9 +27,7 @@ use crate::config::{Config, StorageBackend};
 use crate::error::{Error, Result};
 use crate::index::VaultIndex;
 use crate::paths;
-use crate::vault::{
-    master, AnyStore, FileStore, KeyringStore, VaultError, VaultSecret, VaultStore,
-};
+use crate::vault::{master, AnyStore, FileStore, KeyringStore, VaultError, VaultStore};
 
 /// Resolve the effective command, accounting for the default-action form
 /// and the ansible client form.
@@ -52,39 +50,96 @@ fn resolve_command(cli: &Cli) -> Result<Command> {
     )))
 }
 
-/// Probe whether the OS keyring is usable by writing and deleting a throwaway
-/// entry. Returns `Ok(())` on success, `Err` if the keyring is unavailable.
+/// Which backing store is in effect for this config, without constructing it.
+///
+/// This is the lightweight, side-effect-free companion to [`resolve_store`]:
+/// it answers "keyring or file?" so callers that must behave differently per
+/// backend (notably `avpm unlock`) can branch without paying for a full store
+/// build (which, for the file backend, would prompt for the master passphrase).
+#[must_use]
+pub fn backend_kind(cfg: &Config) -> StorageBackend {
+    match cfg.storage_config().backend {
+        explicit @ (StorageBackend::Keyring | StorageBackend::File) => explicit,
+        StorageBackend::Auto => match probe_keyring(cfg.service()) {
+            Ok(()) => StorageBackend::Keyring,
+            Err(_) => StorageBackend::File,
+        },
+    }
+}
+
+/// Probe whether the OS keyring is reachable, using a **read-only** lookup.
+///
+/// We `get` an entry that is guaranteed not to exist. The outcome tells us
+/// about the keyring itself, not the entry:
+/// - `NotFound` (`keyring::Error::NoEntry`) — the keyring answered, so it is
+///   reachable and usable. Return `Ok(())`.
+/// - `KeyringUnavailable` / `KeyringFailed` — the keyring cannot be reached
+///   (no Secret Service daemon, locked, etc.). Return `Err`.
+///
+/// Read-only probing has no side effects: unlike a write+delete probe, it
+/// never triggers a macOS Keychain authorization dialog and never leaves
+/// stray entries behind. It also makes `resolve_store` cheap to call on
+/// every command.
 fn probe_keyring(service: &str) -> Result<()> {
     let store = KeyringStore::new(service);
-    let probe_id = "_avpm_probe_";
-    let secret = VaultSecret::new("probe".to_string());
-    store.set(probe_id, &secret)?;
-    // Clean up the probe entry; a failure to delete is non-fatal (we already
-    // confirmed writability), so ignore it.
-    let _ = store.delete(probe_id);
-    Ok(())
+    match store.get("_avpm_probe_") {
+        // The keyring answered — either with NotFound (the probe entry
+        // doesn't exist, but the keyring itself is up) or, improbably, with
+        // a value. Both mean the keyring is reachable and usable.
+        Err(Error::Vault(VaultError::NotFound(_))) | Ok(_) => Ok(()),
+        // The keyring is unreachable — fall back to the file store.
+        Err(e) => Err(e),
+    }
 }
+
+/// Environment-variable escape hatch for the file-backend master passphrase.
+///
+/// When set, [`require_master_passphrase`] uses it directly — no keyring lookup,
+/// no interactive prompt. This is intended for non-interactive / CI use where
+/// stdin is not a TTY and no passphrase is cached, and for driving the file
+/// backend in automated tests without an `rpassword` prompt (which would
+/// conflict with `crossterm`'s terminal setup under a pty).
+pub const MASTER_PASSPHRASE_ENV: &str = "AVPM_MASTER_PASSPHRASE";
 
 /// Obtain a master passphrase for the file backend, per the unlock contract:
 ///
-/// 1. If a cached passphrase exists in the keyring, use it.
-/// 2. Otherwise, if stdin is a TTY (interactive use), prompt and best-effort
-///    cache it (a cache failure is downgraded to a warning, not a hard error,
-///    so the user's just-typed passphrase still works for this invocation).
-/// 3. Otherwise (non-interactive, e.g. ansible pipe), return `Locked` so the
+/// 1. If [`MASTER_PASSPHRASE_ENV`] is set (and non-empty), use it directly —
+///    explicit override, no cache or prompt. For CI / automation / tests.
+/// 2. Else if a cached passphrase exists in the keyring, use it.
+/// 3. Else if stdin is a TTY (interactive use), prompt and best-effort cache it
+///    (a cache failure is downgraded to a warning, not a hard error, so the
+///    user's just-typed passphrase still works for this invocation).
+///    - If `store.age` does not exist yet (first run), use `prompt_confirm`
+///      so the user types the new passphrase twice, preventing typos.
+///    - If `store.age` exists, use a single `prompt` (verification happens
+///      implicitly when the caller tries to decrypt with it).
+/// 4. Otherwise (non-interactive, e.g. ansible pipe), return `Locked` so the
 ///    caller exits with code 5 and a stderr hint - never block on stdin.
 pub(crate) fn require_master_passphrase() -> Result<String> {
+    if let Ok(pw) = std::env::var(MASTER_PASSPHRASE_ENV) {
+        if !pw.is_empty() {
+            return Ok(pw);
+        }
+    }
     if let Some(cached) = master::read_cached()? {
         return Ok(cached);
     }
     if std::io::stdin().is_terminal() {
-        let passphrase = crate::password::prompt("Master passphrase")?;
+        let passphrase = if paths::store_path().exists() {
+            crate::password::prompt("Master passphrase")?
+                .as_str()
+                .to_string()
+        } else {
+            crate::password::prompt_confirm("Set master passphrase")?
+                .as_str()
+                .to_string()
+        };
         // Best-effort cache: if the keyring won't hold it, the passphrase still
         // works for *this* process; just warn that it won't persist.
         if let Err(e) = master::cache(passphrase.as_str()) {
             eprintln!("warning: could not cache master passphrase ({e}); you may need to re-enter it later");
         }
-        Ok(passphrase.as_str().to_string())
+        Ok(passphrase)
     } else {
         Err(Error::Vault(VaultError::Locked))
     }
@@ -101,33 +156,24 @@ fn file_store() -> Result<FileStore> {
 ///
 /// - `Keyring`: use the OS keyring; failure propagates (explicit user choice).
 /// - `File`: use the encrypted file store (prompts/caches master passphrase).
-/// - `Auto` (default): prefer the file store once it exists (a prior `avpm
-///   unlock`/`set` created `store.age`, signalling the user is on the file
-///   backend). Otherwise probe the OS keyring; if that is unavailable (e.g.
-///   WSL2 without a GUI to unlock GNOME Keyring) fall back to the file store.
+/// - `Auto` (default): probe the OS keyring with a read-only lookup; if it is
+///   reachable use it, otherwise fall back to the encrypted file store.
 ///
-/// The "store.age exists ⇒ prefer file" rule avoids a subtle misjudgement on
-/// WSL2: the Secret Service `session` collection is writable but non-persistent,
-/// so a naive keyring probe could succeed there yet lose data on the next WSL
-/// restart. On healthy systems (macOS Keychain, Linux desktop with an unlocked
-/// `login` collection) `store.age` never exists, so the keyring is used as
-/// intended. On WSL2 the default alias points at `/` (no `login`), the probe
-/// fails, and the user is routed to the file backend on first use.
+/// `Auto` is **purely probe-driven**: the keyring is used whenever it answers,
+/// regardless of whether a `store.age` exists. A prior accidental `avpm
+/// unlock`/`set` that created `store.age` therefore never locks the user out
+/// of the keyring on a healthy system (macOS Keychain, Linux desktop). On
+/// headless boxes without a Secret Service daemon (WSL2 without a GUI), the
+/// probe fails and the file store is used as intended.
 pub fn resolve_store(cfg: &Config) -> Result<AnyStore> {
-    let store_path = paths::store_path();
-    match cfg.storage_config().backend {
-        StorageBackend::Keyring => Ok(AnyStore::Keyring(KeyringStore::new(cfg.service()))),
+    // backend_kind already collapses Auto into Keyring/File, so we only ever
+    // see those two here; Keyring is the natural default for the collapsed
+    // Auto→Keyring path.
+    match backend_kind(cfg) {
         StorageBackend::File => Ok(AnyStore::File(file_store()?)),
-        StorageBackend::Auto if store_path.exists() => {
-            // User has already initialized the file backend (prior unlock/set).
-            // Stick with it so data stays in the persistent store.age rather
-            // than being written through a possibly-ephemeral session keyring.
-            Ok(AnyStore::File(file_store()?))
+        StorageBackend::Keyring | StorageBackend::Auto => {
+            Ok(AnyStore::Keyring(KeyringStore::new(cfg.service())))
         }
-        StorageBackend::Auto => match probe_keyring(cfg.service()) {
-            Ok(()) => Ok(AnyStore::Keyring(KeyringStore::new(cfg.service()))),
-            Err(_) => Ok(AnyStore::File(file_store()?)),
-        },
     }
 }
 
@@ -143,7 +189,7 @@ pub async fn dispatch(cli: &Cli, cfg: &Config) -> Result<()> {
     // (which may prompt for a master passphrase or fail non-interactively)
     // would only get in their way. Dispatch them before store resolution.
     match cmd {
-        Command::Unlock => return unlock::execute().await,
+        Command::Unlock => return unlock::execute(cfg).await,
         Command::Config { cmd } => return config_cmd::execute(cfg, cmd).await,
         Command::List => return list::execute(&index_handle()).await,
         Command::Sync { cmd: sync_cmd } => {
@@ -170,7 +216,7 @@ pub async fn dispatch(cli: &Cli, cfg: &Config) -> Result<()> {
         Command::Rm { vault_ids, force } => {
             remove::execute(&store, &index, &vault_ids, force).await
         }
-        Command::Show { vault_id } => show::execute(&store, &vault_id).await,
+        Command::Show { vault_id } => show::execute(cfg, &store, &vault_id).await,
         Command::Rename { from, to } => rename::execute(&store, &index, &from, &to).await,
         Command::Tui => tui_cmd::execute(cfg, &store, &index).await,
         Command::Sync { .. } | Command::List | Command::Config { .. } | Command::Unlock => {

@@ -1,8 +1,10 @@
-//! TUI rendering (see `08` §2.3, §2.8).
+//! TUI rendering.
 //!
 //! Single view: title bar (count + quit hint), list area (ListState), footer
-//! (keybindings). Popups render as centered clear areas over the main view.
-//! Colors follow the terminal default (no hardcoded palette).
+//! (status line + keybinding hints). Popups render as centered panels over the
+//! main view. The Form popup renders one `tui-textarea` per field with the
+//! focused field highlighted; password fields are masked at the textarea level
+//! (see [`super::app`]).
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -10,17 +12,17 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::app::{App, Mode};
+use super::app::{App, FormKind, Mode};
 
 /// Render the full TUI for `app`.
-pub fn draw(app: &mut App, frame: &mut Frame) {
+pub fn draw<S: crate::vault::VaultStore>(app: &mut App<'_, S>, frame: &mut Frame) {
     let area = frame.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // title
             Constraint::Min(1),    // list
-            Constraint::Length(2), // footer (status line + keybinding hints)
+            Constraint::Length(2), // footer
         ])
         .split(area);
 
@@ -30,34 +32,24 @@ pub fn draw(app: &mut App, frame: &mut Frame) {
 
     match &app.mode {
         Mode::ShowPassword { reveal } => draw_show_password(frame, app, *reveal),
-        Mode::AddPrompt | Mode::EditPrompt | Mode::RenamePrompt => draw_prompt(frame, app),
-        Mode::ConfirmDelete => {
-            let id = app.selected_id().unwrap_or("(none)");
-            let lines = vec![
-                Line::from(format!("Delete '{id}'?")),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "⚠ This action is irreversible.",
-                    Style::default().add_modifier(Modifier::BOLD),
-                )),
-                Line::from(""),
-                Line::from("[Enter] confirm delete   [Esc] cancel"),
-            ];
-            draw_centered_msg_strings(frame, "Confirm Delete", lines);
-        }
+        Mode::Form { kind, focus } => draw_form(frame, app, *kind, *focus),
+        Mode::ConfirmDelete => draw_confirm_delete(frame, app),
         Mode::SyncMenu => draw_centered_msg(
             frame,
             "Sync",
-            vec!["[p] push  [u] pull  [t] status", "[Esc] cancel"],
+            vec![
+                "Run from the shell (passphrase prompt):",
+                "  avpm sync push | pull | status",
+                "[Esc] close",
+            ],
         ),
-        Mode::SyncProgress { msg } => draw_centered_msg(frame, "Sync", vec![msg.as_str()]),
         Mode::Help => draw_help(frame),
         Mode::Search => draw_search_hint(frame, app),
         Mode::Normal => {}
     }
 }
 
-fn draw_title(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_title<S: crate::vault::VaultStore>(frame: &mut Frame, area: Rect, app: &App<'_, S>) {
     let count = app.items.len();
     let title = format!(" avpm — Vault Secrets ({count}) ");
     let hint = "[q] quit";
@@ -71,11 +63,7 @@ fn draw_title(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(p, area);
 }
 
-fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
-    // Snapshot the ids to end the immutable borrow of `app` before we mutably
-    // borrow `app.state` for the stateful render. We deliberately render id
-    // only — the keyring exposes no per-secret "updated_at" metadata, so any
-    // timestamp would be forged data (acceptance finding #14).
+fn draw_list<S: crate::vault::VaultStore>(frame: &mut Frame, area: Rect, app: &mut App<'_, S>) {
     let ids: Vec<String> = app.filtered_items().iter().map(|i| i.id.clone()).collect();
     let items: Vec<ListItem> = ids
         .into_iter()
@@ -88,17 +76,13 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_stateful_widget(list, area, &mut app.state);
 }
 
-fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
-    // Two rows: a status/message line (operation feedback, clipboard state)
-    // and a contextual keybinding hint that changes with the current mode
-    // (lazygit-style — only show keys that apply right now).
+fn draw_footer<S: crate::vault::VaultStore>(frame: &mut Frame, area: Rect, app: &App<'_, S>) {
     let status = app.message.clone().unwrap_or_default();
     let hints = contextual_hints(&app.mode);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Length(1)])
         .split(area);
-    // Status line (no border; dim if empty so it doesn't distract).
     let status_style = if status.is_empty() {
         Style::default().add_modifier(Modifier::DIM)
     } else {
@@ -109,22 +93,18 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         Line::from(Span::styled(status, status_style))
     };
+    frame.render_widget(Paragraph::new(status_line), chunks[0]);
     frame.render_widget(
-        Paragraph::new(status_line).style(Style::default()),
-        chunks[0],
-    );
-    // Keybinding hints.
-    frame.render_widget(
-        Paragraph::new(Line::from(hints)).style(Style::default()),
+        Paragraph::new(Line::from(hints)).style(Style::default().add_modifier(Modifier::BOLD)),
         chunks[1],
     );
 }
 
-/// Mode-specific keybinding hints (lazygit-style contextual footer).
+/// Mode-specific keybinding hints (contextual footer).
 fn contextual_hints(mode: &Mode) -> String {
     match mode {
         Mode::Normal => {
-            "[y] copy  [Enter] show  [e] edit  [a] add  [d] delete  [/] search  [s] sync  [?] help  [q] quit"
+            "[y] copy  [Enter] show  [e] edit  [a] add  [d] delete  [r] rename  [/] search  [?] help  [q] quit"
                 .to_string()
         }
         Mode::ShowPassword { reveal } => {
@@ -135,12 +115,16 @@ fn contextual_hints(mode: &Mode) -> String {
             }
         }
         Mode::Search => "type to filter  [Esc] cancel".to_string(),
-        Mode::AddPrompt | Mode::EditPrompt | Mode::RenamePrompt => {
-            "[Enter] confirm  [Esc] cancel".to_string()
+        Mode::Form { kind, .. } => {
+            let gen = if matches!(kind, FormKind::Add | FormKind::Edit) {
+                "  [g] generate"
+            } else {
+                ""
+            };
+            format!("[Tab] next field{gen}  [Enter] submit  [Esc] cancel")
         }
         Mode::ConfirmDelete => "[Enter] confirm delete  [Esc] cancel".to_string(),
-        Mode::SyncMenu => "[p] push  [u] pull  [t] status  [Esc] cancel".to_string(),
-        Mode::SyncProgress { .. } => "[Esc] continue".to_string(),
+        Mode::SyncMenu => "[Esc] close".to_string(),
         Mode::Help => "[any key] close".to_string(),
     }
 }
@@ -168,7 +152,7 @@ fn draw_centered_msg(frame: &mut Frame, title: &str, lines: Vec<&str>) {
     let area = frame.area();
     frame.render_widget(Clear, area);
     let height = (lines.len() as u16) + 2;
-    let r = centered_rect(area, 60, height);
+    let r = centered_rect(area, 64, height);
     let body: Vec<Line> = lines.into_iter().map(Line::from).collect();
     let p = Paragraph::new(body)
         .block(
@@ -180,73 +164,141 @@ fn draw_centered_msg(frame: &mut Frame, title: &str, lines: Vec<&str>) {
     frame.render_widget(p, r);
 }
 
-fn draw_show_password(frame: &mut Frame, app: &App, reveal: bool) {
+fn draw_show_password<S: crate::vault::VaultStore>(
+    frame: &mut Frame,
+    app: &App<'_, S>,
+    reveal: bool,
+) {
     let area = frame.area();
     frame.render_widget(Clear, area);
-    let r = centered_rect(area, 64, 6);
+    let r = centered_rect(area, 64, 7);
     let id = app.selected_id().unwrap_or("(none)");
     let (display, hint) = match &app.shown_secret {
-        Some(s) if reveal => (
-            s.as_str().to_string(),
-            "[Space] hide   [Esc] back".to_string(),
-        ),
-        Some(s) => (
-            "•".repeat(s.len()),
-            "[Space] reveal   [Esc] back".to_string(),
-        ),
+        Some(s) if reveal => (s.as_str().to_string(), "[Space] hide"),
+        Some(s) => ("•".repeat(s.as_str().chars().count()), "[Space] reveal"),
         None => (
             String::new(),
-            "(no password loaded; press Esc and try again)".to_string(),
+            "(no password loaded; press Esc and try again)",
         ),
     };
-    let lines = vec![
+    let mut lines = vec![
         Line::from(format!("Vault: {id}")),
         Line::from(""),
         Line::from(display),
         Line::from(""),
-        Line::from(hint),
     ];
+    // Hint line: bold so it stands out from the password area.
+    lines.push(Line::from(Span::styled(
+        format!("{hint}   [y] copy   [Esc] back"),
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
     let p = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title(" Password "))
         .wrap(Wrap { trim: false });
     frame.render_widget(p, r);
 }
 
-fn draw_prompt(frame: &mut Frame, app: &App) {
+/// Render the add/edit/rename form popup. Each field is a labeled textarea;
+/// the focused field gets a highlighted border.
+fn draw_form<S: crate::vault::VaultStore>(
+    frame: &mut Frame,
+    app: &mut App<'_, S>,
+    kind: FormKind,
+    focus: usize,
+) {
     let area = frame.area();
     frame.render_widget(Clear, area);
-    let r = centered_rect(area, 60, 4);
-    let (title, hint) = match app.mode {
-        Mode::AddPrompt => ("Add", "new vault-id"),
-        Mode::EditPrompt => ("Edit", "new password (will prompt after)"),
-        Mode::RenamePrompt => ("Rename", "new vault-id"),
-        _ => ("Input", ""),
+    let title = match kind {
+        FormKind::Add => "Add Vault",
+        FormKind::Edit => "Edit Password",
+        FormKind::Rename => "Rename Vault ID",
     };
-    // Horizontal scroll so long inputs stay visible around the cursor
-    // (tui-input provides visual_scroll for exactly this).
-    let inner_width = r.width.saturating_sub(2) as usize; // minus borders
-    let scroll = app.input.visual_scroll(inner_width);
-    let lines = vec![
-        Line::from(format!("{title}: enter {hint}")),
-        Line::from(""),
-        Line::from(app.input.value()),
-    ];
-    let p = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" {title} ")),
-        )
-        .scroll((0, scroll as u16));
-    frame.render_widget(p, r);
-    // Place the terminal cursor where tui-input says it is, so the user sees
-    // a real blinking cursor and can use Left/Right/Ctrl-A/E naturally.
-    let cursor_x = r.x + 1 + (app.input.visual_cursor().saturating_sub(scroll)) as u16;
-    let cursor_y = r.y + 1 + 2; // two lines down (label + blank)
-    frame.set_cursor_position((cursor_x, cursor_y));
+    let n = kind.field_count();
+    // Each field: 1 label line + 3 textarea lines (top border + 1 content +
+    // bottom border) = 4, plus a title line.
+    let height = (n as u16) * 4 + 1;
+    let r = centered_rect(area, 60, height);
+    // Stack: title, then per-field [label, textarea].
+    let mut constraints = vec![Constraint::Length(1)]; // title line
+    for _ in 0..n {
+        constraints.push(Constraint::Length(1)); // label
+        constraints.push(Constraint::Length(3)); // textarea: border + 1 content + border
+    }
+    let rects = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(r);
+
+    // Title.
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {title} "),
+            Style::default().add_modifier(Modifier::BOLD),
+        ))),
+        rects[0],
+    );
+
+    // Set each textarea's border style (focused vs unfocused).
+    for i in 0..n {
+        let border_style = if i == focus {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::DIM)
+        };
+        if let Some(ta) = app.form_fields_mut().get_mut(i) {
+            ta.set_block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(border_style),
+            );
+        }
+    }
+
+    // Render labels and textareas.
+    for i in 0..n {
+        let label_rect = rects[1 + i * 2];
+        let ta_rect = rects[1 + i * 2 + 1];
+        let label = kind.field_label(i);
+        let label_style = if i == focus {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::DIM)
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(label, label_style))),
+            label_rect,
+        );
+        if let Some(ta) = app.form_fields().get(i) {
+            frame.render_widget(ta, ta_rect);
+        }
+    }
+
+    // Position the terminal cursor inside the focused textarea so the user
+    // sees a blinking cursor and text editing works as expected.
+    if let Some(ta) = app.form_fields().get(focus) {
+        let ta_rect = rects[1 + focus * 2 + 1];
+        let (cy, cx) = ta.cursor();
+        let cursor_x = ta_rect.x + 1 + cx as u16;
+        let cursor_y = ta_rect.y + 1 + cy as u16;
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
 }
 
-fn draw_centered_msg_strings(frame: &mut Frame, title: &str, lines: Vec<Line>) {
+fn draw_confirm_delete<S: crate::vault::VaultStore>(frame: &mut Frame, app: &App<'_, S>) {
+    let id = app.selected_id().unwrap_or("(none)");
+    let lines = vec![
+        Line::from(format!("Delete '{id}'?")),
+        Line::from(""),
+        Line::from(Span::styled(
+            "⚠ This action is irreversible.",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "[Enter] confirm delete   [Esc] cancel",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+    ];
     let area = frame.area();
     frame.render_widget(Clear, area);
     let height = (lines.len() as u16) + 2;
@@ -255,7 +307,7 @@ fn draw_centered_msg_strings(frame: &mut Frame, title: &str, lines: Vec<Line>) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" {title} ")),
+                .title(" Confirm Delete "),
         )
         .wrap(Wrap { trim: true });
     frame.render_widget(p, r);
@@ -267,22 +319,29 @@ fn draw_help(frame: &mut Frame) {
         Line::from(""),
         Line::from("j/k or ↓/↑   move selection"),
         Line::from("g / G         top / bottom"),
-        Line::from("Enter         show password (hold Space to reveal)"),
+        Line::from("Enter         show password (Space to reveal)"),
         Line::from("e             edit selected password"),
         Line::from("a / n         add new vault-id"),
         Line::from("d             delete selected"),
         Line::from("r             rename selected"),
         Line::from("/             search / filter"),
-        Line::from("s             sync menu (push/pull/status)"),
+        Line::from("y             copy password to clipboard"),
         Line::from("?             this help"),
         Line::from("q / Esc       quit / cancel"),
         Line::from(""),
         Line::from("[any key] close"),
     ];
-    draw_centered_msg_strings(frame, "Help", lines);
+    let area = frame.area();
+    frame.render_widget(Clear, area);
+    let height = (lines.len() as u16) + 2;
+    let r = centered_rect(area, 60, height);
+    let p = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(" Help "))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(p, r);
 }
 
-fn draw_search_hint(frame: &mut Frame, app: &App) {
+fn draw_search_hint<S: crate::vault::VaultStore>(frame: &mut Frame, app: &App<'_, S>) {
     let area = frame.area();
     let r = Rect {
         x: 0,

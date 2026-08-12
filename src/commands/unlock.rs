@@ -1,53 +1,80 @@
-//! `avpm unlock` - cache the file-store master passphrase.
+//! `avpm unlock` - cache credentials for the active backend.
 //!
-//! Only relevant when the OS keyring is unavailable (e.g. WSL2 without a GUI)
-//! and avpm falls back to the encrypted file store. Running `unlock` once per
-//! session caches the master passphrase so subsequent non-interactive calls
-//! (notably ansible's `avpm --vault-id <id>`) can decrypt `store.age` without
-//! prompting.
+//! Behavior depends on the resolved backend ([`super::backend_kind`]):
+//!
+//! - **Keyring backend** (macOS Keychain / Linux Secret Service): the keyring
+//!   is already unlocked at the OS level, so there is nothing for avpm to do.
+//!   Prints an informational message and exits with no side effects — in
+//!   particular it never creates `store.age`, so a user who runs `avpm
+//!   unlock` on a keyring-capable system is not accidentally pulled onto the
+//!   file backend.
+//!
+//! - **File backend** (keyring unavailable, e.g. headless WSL2): the file
+//!   store encrypts `store.age` with a master passphrase. `unlock` verifies
+//!   (existing store) or sets (first run) that passphrase and caches it in
+//!   the session keyring so subsequent non-interactive calls — notably
+//!   ansible's `avpm-client --vault-id <id>` — can decrypt without prompting.
+//!   It does **not** create an empty `store.age`; the file is born naturally
+//!   on the first real `set`.
 
 use std::path::Path;
 
+use crate::config::Config;
 use crate::error::Result;
 use crate::paths;
-use crate::vault::{master, FileStore, VaultSecret, VaultStore};
+use crate::vault::{master, FileStore, VaultError, VaultStore};
 
-/// Execute the unlock flow.
+use super::backend_kind;
+use crate::config::StorageBackend;
+
+/// Execute the unlock flow, dispatching on the resolved backend.
+pub async fn execute(cfg: &Config) -> Result<()> {
+    match backend_kind(cfg) {
+        StorageBackend::Keyring => {
+            eprintln!(
+                "keyring backend in use; unlock is not needed.\n  \
+                 passwords are stored in the OS keyring and are available \
+                 without a separate unlock step."
+            );
+            Ok(())
+        }
+        // backend_kind collapses Auto into Keyring/File, so File (and the
+        // collapsed Auto) both route to the file-store unlock flow.
+        StorageBackend::File | StorageBackend::Auto => unlock_file_store().await,
+    }
+}
+
+/// File-backend unlock: verify or set the master passphrase, then cache it.
 ///
-/// - If `store.age` does not exist yet, prompt for a new master passphrase
-///   (twice, with confirmation) and create the store by writing a probe entry.
 /// - If `store.age` exists, prompt for the passphrase and verify it by
-///   decrypting; a wrong passphrase exits with code 4.
-/// - On success, cache the passphrase in the keyring for this session.
-pub async fn execute() -> Result<()> {
+///   decrypting (a wrong passphrase surfaces as `StoreDecrypt`, exit 4).
+/// - If `store.age` does not exist yet (first run), prompt for a new
+///   passphrase with confirmation. No empty `store.age` is written; the file
+///   is created naturally on the first real `set`.
+/// - On success, cache the passphrase in the session keyring.
+async fn unlock_file_store() -> Result<()> {
     let store_path = paths::store_path();
     let passphrase = if Path::new(&store_path).exists() {
         // Existing store: verify the passphrase by decrypting. We probe by
         // reading any single entry - on a valid passphrase this succeeds (or
-        // returns NotFound if the store is empty, both prove decryption worked);
-        // on a wrong passphrase FileStore::get returns StoreDecrypt.
+        // returns NotFound if the store is empty, both prove decryption
+        // worked); on a wrong passphrase FileStore::get returns StoreDecrypt.
         let pass = crate::password::prompt("Master passphrase")?;
         let probe = FileStore::new(store_path.clone(), pass.as_str());
-        // A get on an empty-but-valid store returns NotFound (decryption still
-        // happened); a wrong passphrase returns StoreDecrypt. Both non-fatal
-        // variants prove the passphrase check outcome.
         match probe.get("_avpm_unlock_probe_") {
-            Ok(_) | Err(crate::error::Error::Vault(crate::vault::VaultError::NotFound(_))) => {
+            Ok(_) | Err(crate::error::Error::Vault(VaultError::NotFound(_))) => {
                 pass.as_str().to_string()
             }
             Err(e) => return Err(e),
         }
     } else {
-        // First run: set a new master passphrase with confirmation.
+        // First run: set a new master passphrase with confirmation. The
+        // store file is NOT created here; it will be born on the first real
+        // `set`, encrypted with this passphrase. We only cache the passphrase
+        // so the upcoming `set` (and ansible's non-interactive calls) can
+        // proceed without re-prompting.
         let secret = crate::password::prompt_confirm("Set master passphrase")?;
-        let pass = secret.as_str().to_string();
-        // Create the store by writing an initial entry, then remove it so the
-        // store exists but is empty. (FileStore::save writes the file even for
-        // an empty map, but going through the trait keeps a single code path.)
-        let store = FileStore::new(store_path.clone(), pass.clone());
-        store.set("_avpm_init_", &VaultSecret::new(String::new()))?;
-        let _ = store.delete("_avpm_init_");
-        pass
+        secret.as_str().to_string()
     };
 
     // Best-effort cache: if the keyring won't hold it, the unlock still

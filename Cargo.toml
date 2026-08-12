@@ -20,6 +20,14 @@ autotests = false
 name = "avpm"
 path = "src/main.rs"
 
+# Ansible vault password client entry point. Ansible only passes `--vault-id`
+# to scripts whose file name ends in `-client` (script_is_client detection),
+# so a second binary with that name is required for the vault-password-client
+# protocol. It shares the exact same implementation as `avpm`.
+[[bin]]
+name = "avpm-client"
+path = "src/bin/client.rs"
+
 [[test]]
 name = "integration"
 path = "tests/main.rs"
@@ -56,9 +64,12 @@ age = { version = "0.12", features = ["armor"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 # === TUI ===
-ratatui = "0.30"
-crossterm = "0.29"
-tui-input = { version = "0.15", features = ["crossterm"] }
+# ratatui is pinned to 0.29 to match tui-textarea 0.7's dependency; ratatui
+# 0.30 would pull a second ratatui copy and the Widget trait impls wouldn't
+# line up. crossterm 0.28 is the version ratatui 0.29 + tui-textarea 0.7 use.
+ratatui = "0.29"
+crossterm = "0.28"
+tui-textarea = { version = "0.7", features = ["crossterm"] }
 arboard = "3"
 
 # === Async runtime ===
@@ -90,6 +101,16 @@ proptest = "1"
 # normal dependencies, zero new downloads).
 secret-service = { version = "5", features = ["rt-async-io-crypto-rust"] }
 zvariant = "5"
+
+# For TUI integration tests (tests/tui/): drive `avpm tui` under a pty and
+# assert on the rendered output.
+# portable-pty (wezterm): cross-platform pty spawn, used instead of the
+# Linux-only `script` wrapper so TUI tests also run on macOS.
+# (A terminal-emulator crate was considered — vt100 — but it requires
+# unicode-width ^0.2.1 while ratatui 0.29 pins =0.2.0 exactly, an
+# irreconcilable conflict. vte, a conflict-free parser, remains a future
+# option if a test needs positional screen precision.)
+portable-pty = "0.9"
 
 [features]
 default = []

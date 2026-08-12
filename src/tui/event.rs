@@ -1,4 +1,4 @@
-//! Terminal event polling (crossterm 0.29 synchronous poll/read, see `08` §2.2).
+//! Terminal event polling (crossterm synchronous poll/read).
 
 use std::time::Duration;
 

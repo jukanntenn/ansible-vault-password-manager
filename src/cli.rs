@@ -59,7 +59,7 @@ pub enum Command {
     /// List all known vault-ids.
     List,
 
-    /// Show a password in a secure TUI view (hold Space to reveal).
+    /// Show a password in a secure TUI view (Space toggles reveal).
     Show { vault_id: String },
 
     /// Rename a vault-id.
@@ -68,11 +68,14 @@ pub enum Command {
     /// Open the full interactive TUI.
     Tui,
 
-    /// Cache the master passphrase for the file store (one-time per session).
+    /// Unlock the active backend for non-interactive use.
     ///
-    /// Only relevant when the OS keyring is unavailable and avpm falls back to
-    /// the encrypted file store. Required before ansible can call `avpm
-    /// --vault-id <id>` non-interactively.
+    /// On the keyring backend (macOS Keychain / Linux Secret Service) this is a
+    /// no-op: the keyring is already unlocked at the OS level, so nothing is
+    /// cached and no `store.age` is created. On the file backend (keyring
+    /// unavailable, e.g. headless WSL2) it caches the master passphrase for
+    /// this session so ansible's `avpm-client --vault-id <id>` can decrypt
+    /// without prompting.
     Unlock,
 
     /// Encrypted multi-device sync.
