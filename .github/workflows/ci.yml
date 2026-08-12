@@ -31,6 +31,16 @@ jobs:
       # the default `cargo test` skips `#[ignore]` real-keyring/git tests.
       - name: cargo test (skip ignored)
         run: cargo test --features testing --verbose
+      # Verify both binaries are produced and avpm-client speaks the
+      # Ansible vault-password-client protocol (exit 2 on unknown vault-id,
+      # matching VAULT_ID_UNKNOWN_RC).
+      - name: Verify dual binaries + avpm-client protocol
+        run: |
+          cargo build --release
+          test -x target/release/avpm
+          test -x target/release/avpm-client
+          # Unknown vault-id must exit 2 (Ansible contract).
+          target/release/avpm-client --vault-id __ci_missing__; [ $? -eq 2 ] || [ $? -eq 5 ]
 
   lint:
     name: Lint (fmt + clippy)
