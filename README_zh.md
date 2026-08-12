@@ -107,31 +107,44 @@ avpm config path           # 打印配置文件路径
 avpm config edit           # 用 $EDITOR 打开配置
 
 # 文件存储后端（无 keyring 环境，如无头 WSL2）
-avpm unlock                # 每次会话一次：缓存主口令
+avpm unlock                # keyring 后端：无操作；file 后端：缓存主口令
 ```
 
 ### Ansible 集成
 
-avpm 遵循 Ansible vault-password-client 协议：`avpm --vault-id <id>`
-将密码打印到 stdout；当 vault-id 未知时以退出码 **2** 结束（与上游
-keyring client 的 `KEYNAME_UNKNOWN_RC` 一致）。
+avpm 提供**两个二进制**：
+
+- **`avpm`** —— 完整的密码管理器（CLI + TUI）。
+- **`avpm-client`** —— Ansible vault 密码客户端入口。
+
+之所以单独提供 `avpm-client`，是因为 Ansible 只有在脚本文件名以 `-client`
+结尾时，才会用 `--vault-id <id>` 参数调用它（见 Ansible 的 `script_is_client`
+检测，`lib/ansible/parsing/vault/__init__.py`）。如果文件名没有 `-client`
+后缀，Ansible 会**无参数**调用脚本，avpm 就无法知道请求的是哪个 vault-id。
+所以**务必用 `avpm-client`（而不是 `avpm`）作为 vault 密码来源。**
+
+`avpm-client --vault-id <id>` 将密码打印到 stdout；vault-id 未知时以退出码
+**2** 结束（与 Ansible 的 `VAULT_ID_UNKNOWN_RC = 2` 一致，告知 Ansible
+"这个 client 没有该 vault-id"）。
 
 ```bash
-# 1. 环境变量
-export ANSIBLE_VAULT_PASSWORD_FILE=/path/to/avpm
-
-# 2. 命令行
-ansible-playbook --vault-password-file /path/to/avpm site.yml
-
-# 3. ansible.cfg
+# 1. ansible.cfg（推荐）
 [defaults]
-vault_password_file = /path/to/avpm
+vault_password_file = /path/to/avpm-client
 
-# 多 vault-id：
-ansible-playbook --vault-id dev@/path/to/avpm site.yml
+# 2. 环境变量
+export ANSIBLE_VAULT_PASSWORD_FILE=/path/to/avpm-client
+
+# 3. 命令行 —— 单 vault-id
+ansible-playbook --vault-password-file /path/to/avpm-client site.yml
+
+# 4. 多 vault-id（label@client）
+ansible-playbook --vault-id dev@/path/to/avpm-client site.yml
+ansible-playbook --vault-id dev@/path/to/avpm-client --vault-id prod@/path/to/avpm-client site.yml
 ```
 
-`get` 的 stdout 是**纯净的**——只有密码本身——因此可以安全地通过管道传给 Ansible。
+`avpm-client` 的 stdout 是**纯净的**——只有密码，单行——因此可以安全地
+通过管道传给 Ansible。
 
 ### 存储后端
 
@@ -139,7 +152,7 @@ avpm 将 vault 存入以下两个后端之一，由 `[storage].backend` 选择�
 
 - **`keyring`** —— 操作系统原生 keyring（macOS 钥匙串 / Linux Secret Service）。
 - **`file`** —— age 加密文件存储（`store.age`，scrypt + armored ASCII），适用于无 keyring 环境（无头 WSL2 / CI 容器）。每次会话需先执行一次 `avpm unlock` 缓存主口令；未缓存时非交互调用以退出码 **5**（`Locked`）结束。
-- **`auto`**（默认）—— keyring 可用时使用 keyring，否则回退到文件存储。
+- **`auto`**（默认）—— 用只读探测检查 OS keyring 是否可达；可达则用 keyring，否则回退到文件存储。探测纯粹基于可用性——即使存在残留的 `store.age`，只要 keyring 可达就优先用 keyring，macOS/桌面用户永远不会被意外拽离 keyring。
 
 ### 同步配置
 

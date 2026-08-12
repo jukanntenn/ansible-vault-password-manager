@@ -18,8 +18,8 @@ machines using age-encrypted manifests over Git or WebDAV backends.
 
 ## Features
 
-- **Drop-in for Ansible** — speaks the standard vault-password-client protocol
-  (`avpm --vault-id <id>`); pure stdout, nothing else, safe to pipe.
+- **Drop-in for Ansible** — ships `avpm-client`, the standard vault-password-client
+  script (`avpm-client --vault-id <id>`); pure stdout, nothing else, safe to pipe.
 - **Zero-config start** — `set`/`get`/`list`/`rm` work out of the box, no
   config file required.
 - **Secure by design** — passwords live in the OS keyring (macOS Keychain /
@@ -123,32 +123,46 @@ avpm config path           # print the config file path
 avpm config edit           # open the config in $EDITOR
 
 # File-store backend (keyring-less environments, e.g. headless WSL2)
-avpm unlock                # one-time per session: cache the master passphrase
+avpm unlock                # keyring backend: no-op; file backend: cache the master passphrase
 ```
 
 ### Ansible integration
 
-avpm speaks the Ansible vault-password-client protocol: `avpm --vault-id <id>`
-prints the password to stdout, and exits with code **2** when the vault-id is
-unknown (matching `KEYNAME_UNKNOWN_RC` from the upstream keyring client).
+avpm ships **two binaries**:
+
+- **`avpm`** — the full password manager (CLI + TUI).
+- **`avpm-client`** — the Ansible vault password client entry point.
+
+`avpm-client` exists because Ansible only invokes a vault password script
+with `--vault-id <id>` when the script's file name ends in `-client` (see
+Ansible's `script_is_client` detection in
+`lib/ansible/parsing/vault/__init__.py`). Without the `-client` suffix,
+Ansible calls the script with **no arguments** and avpm cannot learn which
+vault-id is requested. So **always use `avpm-client` (not `avpm`) as the
+vault password source.**
+
+`avpm-client --vault-id <id>` prints the password to stdout; an unknown
+vault-id exits with code **2** (matching Ansible's `VAULT_ID_UNKNOWN_RC = 2`,
+which tells Ansible "this client doesn't have that vault-id").
 
 ```bash
-# 1. Environment variable
-export ANSIBLE_VAULT_PASSWORD_FILE=/path/to/avpm
-
-# 2. Command line
-ansible-playbook --vault-password-file /path/to/avpm site.yml
-
-# 3. ansible.cfg
+# 1. ansible.cfg (recommended)
 [defaults]
-vault_password_file = /path/to/avpm
+vault_password_file = /path/to/avpm-client
 
-# Multiple vault-ids:
-ansible-playbook --vault-id dev@/path/to/avpm site.yml
+# 2. Environment variable
+export ANSIBLE_VAULT_PASSWORD_FILE=/path/to/avpm-client
+
+# 3. Command line — single vault-id
+ansible-playbook --vault-password-file /path/to/avpm-client site.yml
+
+# 4. Multiple vault-ids (label@client)
+ansible-playbook --vault-id dev@/path/to/avpm-client site.yml
+ansible-playbook --vault-id dev@/path/to/avpm-client --vault-id prod@/path/to/avpm-client site.yml
 ```
 
-`get`'s stdout is **pure** — only the password — so it's safe to pipe to
-Ansible.
+`avpm-client`'s stdout is **pure** — only the password, one line — so it is
+safe for Ansible to consume via pipe.
 
 ### Storage backends
 
@@ -160,8 +174,11 @@ avpm stores vaults in one of two backends, selected by `[storage].backend`
   for keyring-less environments (headless WSL2 / CI containers). Requires
   `avpm unlock` once per session to cache the master passphrase; non-
   interactive calls without a cache exit **5** (`Locked`).
-- **`auto`** (default) — use the keyring when available, otherwise fall back
-  to the file store.
+- **`auto`** (default) — probe the OS keyring with a read-only lookup; use it
+  when reachable, otherwise fall back to the file store. The probe is purely
+  availability-driven — a stray `store.age` never forces the file backend when
+  the keyring is up, so macOS/desktop users are never accidentally pulled off
+  the keyring.
 
 ### Sync configuration
 
