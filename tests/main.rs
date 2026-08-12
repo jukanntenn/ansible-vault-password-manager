@@ -20,10 +20,15 @@
 //!   deterministic, keyring-free CLI surface — `--help`, `--version`,
 //!   `config path`, no-command, argument routing.
 
+mod ansible_client;
+mod ansible_e2e;
+mod backend_selection;
 mod common;
+mod contract;
 mod e2e;
 mod sync_backend;
 mod sync_engine;
+mod tui;
 
 /// Declarative CLI snapshot cases under `tests/cmd/`.
 ///

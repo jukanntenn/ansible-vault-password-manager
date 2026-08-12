@@ -19,6 +19,13 @@ pub fn avpm() -> Command {
     Command::cargo_bin("avpm").expect("avpm binary built")
 }
 
+/// The `avpm-client` binary (the Ansible vault password client entry point).
+/// It shares the implementation with [`avpm`]; tests verify the
+/// `--vault-id` protocol that Ansible's `ClientScriptVaultSecret` relies on.
+pub fn avpm_client() -> Command {
+    Command::cargo_bin("avpm-client").expect("avpm-client binary built")
+}
+
 /// Point `cmd` at isolated dirs so it can never touch the developer's real
 /// `~/.local/share/avpm` / `~/.config/avpm`.
 ///

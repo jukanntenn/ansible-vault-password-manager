@@ -290,6 +290,11 @@ fn script_pipe(cmd: &mut StdCommand, input: &str) -> std::process::Output {
 /// Interactive `avpm unlock` over a pty (util-linux `script`). Linux-only:
 /// BSD `script` doesn't forward piped stdin, and the flow is the headless
 /// WSL2 story anyway.
+///
+/// Forces the file backend (`backend = "file"`) so the unlock flow is
+/// deterministic regardless of whether a Secret Service daemon is present
+/// (with the new smart unlock, a reachable keyring would make `unlock` a
+/// no-op).
 #[cfg(target_os = "linux")]
 #[test]
 fn unlock_interactive_flow() {
@@ -301,6 +306,7 @@ fn unlock_interactive_flow() {
     let previous = snapshot_cache();
 
     let dev = tempfile::TempDir::new().unwrap();
+    write_config(dev.path(), "[storage]\nbackend = \"file\"\n");
     let mut cmd = avpm();
     cmd.arg("unlock");
     isolate(&mut cmd, dev.path());
