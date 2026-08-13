@@ -79,8 +79,8 @@ fn tui_env_ok() -> bool {
 ///
 /// Asserted on the raw pty byte stream since the typing action: the security
 /// property is precisely "plaintext never reaches the pty", because
-/// `tui-textarea` applies the mask char at render time and writes only `•`
-/// into the cell buffer that crossterm flushes.
+/// the form input widget applies the mask char at render time and writes only
+/// `•` into the cell buffer that crossterm flushes.
 #[test]
 fn add_form_masks_password_field() {
     if !tui_env_ok() {

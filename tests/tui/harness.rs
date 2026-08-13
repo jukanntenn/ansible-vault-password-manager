@@ -3,7 +3,7 @@
 //!
 //! Why raw bytes (not a terminal emulator)?
 //! - The masking guarantee we test is "plaintext never reaches the pty".
-//!   `tui-textarea` applies its mask char at render time, so the stream
+//!   The form input widget applies its mask char at render time, so the stream
 //!   physically contains `•` (U+2022) and never the secret. Asserting on the
 //!   raw stream tests that protocol-layer property directly — a strictly
 //!   stronger check than "screen cell N shows •".
@@ -84,6 +84,12 @@ impl TuiSession {
     /// env var there is no prompt, so the TUI enters raw mode and renders
     /// normally. The whole session runs on an encrypted `store.age` under the
     /// isolated data dir — no keychain dialogs, no real data touched.
+    ///
+    /// portable-pty uses `$HOME` as the child's working directory when no cwd
+    /// is set; HOME here points at a deliberately non-existent `home/` subdir
+    /// (that non-existence is what makes the OS keyring unreachable). The
+    /// explicit cwd keeps spawn working on Linux, where a non-existent
+    /// current-directory fails the exec (macOS's posix_spawn tolerates it).
     pub fn spawn_file(isolated_dir: &Path, master_passphrase: &str) -> Self {
         crate::common::write_config(isolated_dir, "[storage]\nbackend = \"file\"\n");
         let mut cmd = Self::base_cmd(&["tui"]);
@@ -91,6 +97,7 @@ impl TuiSession {
         cmd.env("XDG_CONFIG_HOME", isolated_dir.join("config"));
         cmd.env("HOME", isolated_dir.join("home"));
         cmd.env("AVPM_MASTER_PASSPHRASE", master_passphrase);
+        cmd.cwd(isolated_dir);
         let mut s = Self::spawn_cmd(cmd);
         // Wait for the TUI to render its first frame before returning. The
         // crossterm/ratatui init under a pty can take a few seconds to flush the
