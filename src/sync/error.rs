@@ -12,6 +12,12 @@ pub enum SyncError {
     #[error("manifest serialization failed: {0}")]
     Manifest(String),
 
+    /// `sync push` aborts when the 3-way merge finds conflicts: it must not
+    /// silently pick a side. Carries the conflicting vault-ids so the CLI can
+    /// tell the user to run `sync pull` to resolve interactively.
+    #[error("sync push aborted: conflicts need resolution. Run `avpm sync pull` first")]
+    Conflict(Vec<String>),
+
     #[error("decryption failed: wrong master password or corrupted data")]
     Decrypt(#[from] age::DecryptError),
 

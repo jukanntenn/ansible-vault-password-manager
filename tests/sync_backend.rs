@@ -27,6 +27,11 @@ fn index_in(dir: &tempfile::TempDir) -> VaultIndex {
     VaultIndex::new(dir.path().join("index.json"))
 }
 
+/// Per-device local base path (the 3-way common ancestor is per-device state).
+fn base_in(dir: &tempfile::TempDir, who: &str) -> PathBuf {
+    dir.path().join(format!("base-{who}.age"))
+}
+
 async fn setup_bare(dir: &Path) -> PathBuf {
     let bare = dir.join("vault.git");
     Command::new("git")
@@ -72,7 +77,13 @@ async fn acceptance_flow_push_clone_pull_status() {
     // F3: push.
     let (store1, index1) = device1(&tmp);
     let summary = SyncEngine::new(GitBackend::new(&cfg))
-        .push(&store1, &index1, "master-pw", Some("initial backup"))
+        .push(
+            &store1,
+            &index1,
+            &base_in(&tmp, "dev1"),
+            "master-pw",
+            Some("initial backup"),
+        )
         .await
         .unwrap();
     assert_eq!(summary.pushed_count, 3);
@@ -116,7 +127,13 @@ async fn acceptance_flow_push_clone_pull_status() {
     let (store2, index2) = (MockStore::new(), index_in(&tmp));
     let mut resolver = KeepLocalResolver;
     let pull = SyncEngine::new(GitBackend::new(&cfg))
-        .pull(&store2, &index2, "master-pw", &mut resolver)
+        .pull(
+            &store2,
+            &index2,
+            &base_in(&tmp, "dev2"),
+            "master-pw",
+            &mut resolver,
+        )
         .await
         .unwrap();
     assert_eq!(pull.added, vec!["dev", "prod", "staging"]);
@@ -126,7 +143,7 @@ async fn acceptance_flow_push_clone_pull_status() {
 
     // F6: status between identical stores reports everything unchanged.
     let status = SyncEngine::new(GitBackend::new(&cfg))
-        .status(&store2, &index2, "master-pw")
+        .status(&store2, &index2, &base_in(&tmp, "dev2"), "master-pw")
         .await
         .unwrap();
     assert_eq!(status.unchanged.len(), 3);
@@ -194,7 +211,7 @@ async fn first_push_to_master_only_remote_adopts_and_pulls() {
 
     let (store1, index1) = device1(&tmp);
     SyncEngine::new(GitBackend::new(&cfg))
-        .push(&store1, &index1, "master-pw", None)
+        .push(&store1, &index1, &base_in(&tmp, "dev1"), "master-pw", None)
         .await
         .unwrap();
 
@@ -218,7 +235,13 @@ async fn first_push_to_master_only_remote_adopts_and_pulls() {
     let (store2, index2) = (MockStore::new(), index_in(&tmp));
     let mut resolver = KeepLocalResolver;
     let pull = SyncEngine::new(GitBackend::new(&cfg))
-        .pull(&store2, &index2, "master-pw", &mut resolver)
+        .pull(
+            &store2,
+            &index2,
+            &base_in(&tmp, "dev2"),
+            "master-pw",
+            &mut resolver,
+        )
         .await
         .unwrap();
     assert_eq!(pull.added.len(), 3);

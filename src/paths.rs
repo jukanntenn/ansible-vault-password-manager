@@ -8,6 +8,7 @@ const APP_DIR: &str = "avpm";
 const CONFIG_FILE: &str = "config.toml";
 const INDEX_FILE: &str = "index.json";
 const STORE_FILE: &str = "store.age";
+const SYNC_BASE_FILE: &str = "sync-base.age";
 
 /// Returns the config file path (`~/.config/avpm/config.toml` on Linux,
 /// `~/Library/Application Support/avpm/config.toml` on macOS).
@@ -60,4 +61,15 @@ pub fn cache_dir() -> PathBuf {
 #[must_use]
 pub fn sync_tmp_dir() -> PathBuf {
     cache_dir().join("sync-tmp")
+}
+
+/// Returns the local sync base manifest path (`<data_dir>/sync-base.age`).
+///
+/// The base is the last-synced snapshot (the 3-way merge common ancestor),
+/// age-encrypted with the master passphrase. It is **local-only**: never
+/// uploaded, never leaves the device. Loss only degrades the next merge to a
+/// 2-way union (still safe, just more conflicts).
+#[must_use]
+pub fn sync_base_path() -> PathBuf {
+    data_dir().join(SYNC_BASE_FILE)
 }
