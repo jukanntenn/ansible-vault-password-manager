@@ -61,7 +61,14 @@ zvariant = "5"
 age = { version = "0.12", features = ["armor"] }
 
 # === WebDAV backend ===
+# reqwest is shared with reqwest_dav (0.2.2 pins reqwest ^0.12, so no version
+# bump). The "form" feature is added by reqwest_dav; rustls-tls stays our TLS.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# Community WebDAV client (1M+ downloads, used by OpenTalk). Replaces the
+# hand-rolled HEAD/PUT/GET + base64 Basic-auth code. Conditional PUTs (If-Match
+# / If-None-Match) are done via the public `start_request` escape hatch, which
+# returns a raw reqwest::RequestBuilder we attach headers to.
+reqwest_dav = "0.2.2"
 
 # === TUI ===
 # ratatui 0.30 dropped the unmaintained `paste` proc-macro dependency
@@ -112,6 +119,11 @@ zvariant = "5"
 # irreconcilable conflict. vte, a conflict-free parser, remains a future
 # option if a test needs positional screen precision.)
 portable-pty = "0.9"
+
+# WebDAV mock server for backend e2e tests. Chosen over wiremock (half-dead,
+# ~1y stale) and mockito (no standalone mode) for its standalone server + Docker
+# image, which enables future cross-process/Docker e2e tests.
+httpmock = "0.8"
 
 [features]
 default = []

@@ -1,12 +1,16 @@
-//! `WebDavBackend` - sync via WebDAV HTTP (see `09` §4.3).
+//! `WebDavBackend` — sync via WebDAV HTTP, backed by the `reqwest_dav` client.
 //!
-//! `exists` → PROPFIND/HEAD, `push` → PUT, `pull` → GET. Auth is HTTP Basic
-//! with credentials stored in the keyring under service `avpm-webdav`.
-//! The `url` is treated as a *directory*; the blob filename is fixed
-//! `vault.age`.
+//! `exists` → GET (probe), `push` → PUT, `pull` → GET. Auth is HTTP Basic with
+//! credentials stored in the keyring under service `avpm-webdav`; `reqwest_dav`
+//! assembles the `Authorization` header (no hand-rolled base64). The `url` is a
+//! directory; the blob filename is fixed `vault.age`.
+//!
+//! Error precision: a network/auth failure surfaces as `Err` (never faked as
+//! "absent"), while an HTTP 404 yields `Ok(false)` / `RemoteNotFound`. The
+//! `read-merge-write` engine relies on this to distinguish "remote empty"
+//! from "can't reach remote".
 
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
-use reqwest::{Client, Method};
+use reqwest_dav::{Auth, ClientBuilder};
 use tracing::{debug, instrument};
 
 use crate::config::WebDavConfig;
@@ -22,28 +26,46 @@ const BLOB_NAME: &str = "vault.age";
 
 /// WebDAV-backed sync transport.
 pub struct WebDavBackend {
-    client: Client,
     base_url: String,
     username: String,
     cred_store: KeyringStore,
+    /// When set (tests / non-keyring environments), used instead of the keyring.
+    password_override: Option<String>,
 }
 
 impl WebDavBackend {
-    /// Build a backend. Lazily resolves the password from the keyring on each
-    /// request; if missing, the caller (sync engine) is expected to prompt the
-    /// user and store it via [`WebDavBackend::ensure_password`].
+    /// Build a backend. The password is resolved from the keyring on each
+    /// operation (after [`Self::ensure_password`] has stored it).
     #[must_use]
     pub fn new(cfg: &WebDavConfig) -> Self {
         Self {
-            client: Client::new(),
             base_url: normalize_dir_url(&cfg.url),
             username: cfg.username.clone(),
             cred_store: KeyringStore::new(WEBDAV_SERVICE),
+            password_override: None,
+        }
+    }
+
+    /// Build a backend with an inline password, bypassing the keyring. For
+    /// httpmock-backed e2e tests (and any keyring-less environment) so they
+    /// don't depend on a live Secret Service / Keychain.
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn new_with_password(cfg: &WebDavConfig, password: String) -> Self {
+        Self {
+            base_url: normalize_dir_url(&cfg.url),
+            username: cfg.username.clone(),
+            cred_store: KeyringStore::new(WEBDAV_SERVICE),
+            password_override: Some(password),
         }
     }
 
     /// Prompt for and store the WebDAV password if not already in the keyring.
+    /// A no-op when an inline password override is set.
     pub fn ensure_password(&self) -> Result<()> {
+        if self.password_override.is_some() {
+            return Ok(());
+        }
         match self.cred_store.get(WEBDAV_USER) {
             Ok(_) => Ok(()),
             Err(Error::Vault(crate::vault::VaultError::NotFound(_))) => {
@@ -55,64 +77,49 @@ impl WebDavBackend {
         }
     }
 
-    fn basic_auth_header(&self) -> Result<HeaderValue> {
-        let pw = self.cred_store.get(WEBDAV_USER)?;
-        let creds = format!("{}:{}", self.username, pw.as_str());
-        let encoded = base64_encode(creds.as_bytes());
-        let val = HeaderValue::from_str(&format!("Basic {encoded}")).map_err(|e| {
-            Error::Sync(crate::sync::SyncError::Backend(SyncBackendError::WebDav(
-                e.to_string(),
-            )))
-        })?;
-        Ok(val)
-    }
-
-    fn blob_url(&self) -> String {
-        format!("{base}{BLOB_NAME}", base = self.base_url)
-    }
-
-    async fn request(&self, method: Method, body: Option<&[u8]>) -> Result<reqwest::Response> {
-        let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, self.basic_auth_header()?);
-        let mut req = self
-            .client
-            .request(method, self.blob_url())
-            .headers(headers);
-        if let Some(b) = body {
-            req = req.body(b.to_vec());
+    fn password(&self) -> Result<String> {
+        if let Some(pw) = &self.password_override {
+            return Ok(pw.clone());
         }
-        req.send().await.map_err(|e| {
-            Error::Sync(crate::sync::SyncError::Backend(SyncBackendError::WebDav(
-                e.to_string(),
-            )))
-        })
+        Ok(self.cred_store.get(WEBDAV_USER)?.as_str().to_string())
+    }
+
+    /// Build a `reqwest_dav` client. Sync issues only a handful of requests per
+    /// operation, so a fresh client per call is fine.
+    fn dav(&self) -> Result<reqwest_dav::Client> {
+        let pw = self.password()?;
+        ClientBuilder::new()
+            .set_host(self.base_url.clone())
+            .set_auth(Auth::Basic(self.username.clone(), pw))
+            .build()
+            .map_err(|e| webdav_err(&e.to_string()))
     }
 }
 
 impl SyncBackend for WebDavBackend {
-    #[instrument(skip(self, data), fields(url = %self.blob_url(), bytes = data.len()))]
+    #[instrument(skip(self, data), fields(path = BLOB_NAME, bytes = data.len()))]
     async fn push(&self, data: &[u8], message: Option<&str>) -> Result<()> {
-        // WebDAV is a flat blob store with no commit/audit concept; the
-        // optional message is ignored (only git uses it for the commit msg).
-        // Bind to `message` (not `_message`) to avoid clippy's pedantic
-        // `used_underscore_binding` lint while still documenting intent.
+        // Flat blob store: no commit/audit concept, so the message is ignored.
         let _ = message;
         debug!("webdav PUT");
-        let resp = self.request(Method::PUT, Some(data)).await?;
-        let status = resp.status();
-        if status.is_success() {
-            Ok(())
-        } else {
-            Err(Error::Sync(crate::sync::SyncError::Backend(
-                SyncBackendError::WebDav(format!("PUT returned {status}")),
-            )))
-        }
+        let client = self.dav()?;
+        client
+            .put(BLOB_NAME, data.to_vec())
+            .await
+            .map_err(|e| webdav_err(&e.to_string()))?;
+        Ok(())
     }
 
-    #[instrument(skip(self), fields(url = %self.blob_url()))]
+    #[instrument(skip(self), fields(path = BLOB_NAME))]
     async fn pull(&self) -> Result<Vec<u8>> {
         debug!("webdav GET");
-        let resp = self.request(Method::GET, None).await?;
+        let client = self.dav()?;
+        // get_raw returns the response without a status assertion, so we can
+        // distinguish 404 (RemoteNotFound) from other failures.
+        let resp = client
+            .get_raw(BLOB_NAME)
+            .await
+            .map_err(|e| webdav_err(&e.to_string()))?;
         let status = resp.status();
         if status == reqwest::StatusCode::NOT_FOUND {
             return Err(Error::Sync(crate::sync::SyncError::Backend(
@@ -124,50 +131,30 @@ impl SyncBackend for WebDavBackend {
                 SyncBackendError::WebDav(format!("GET returned {status}")),
             )));
         }
-        resp.bytes_to_vec_await().await
+        resp.bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| webdav_err(&e.to_string()))
     }
 
-    #[instrument(skip(self), fields(url = %self.blob_url()))]
+    #[instrument(skip(self), fields(path = BLOB_NAME))]
     async fn exists(&self) -> Result<bool> {
-        debug!("webdav HEAD");
-        let resp = self.request(Method::HEAD, None).await?;
+        debug!("webdav probe GET");
+        let client = self.dav()?;
+        let resp = client
+            .get_raw(BLOB_NAME)
+            .await
+            .map_err(|e| webdav_err(&e.to_string()))?;
         let status = resp.status();
         Ok(status.is_success())
+        // 404 → false (absent); a transport error already became Err above.
     }
 }
 
-/// Minimal non-allocating base64 encoder (avoids pulling a base64 crate for a
-/// single use). RFC 4648 standard alphabet, padded.
-fn base64_encode(input: &[u8]) -> String {
-    const TBL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-    let mut chunks = input.chunks_exact(3);
-    for c in &mut chunks {
-        let n = (u32::from(c[0]) << 16) | (u32::from(c[1]) << 8) | u32::from(c[2]);
-        out.push(TBL[((n >> 18) & 0x3F) as usize] as char);
-        out.push(TBL[((n >> 12) & 0x3F) as usize] as char);
-        out.push(TBL[((n >> 6) & 0x3F) as usize] as char);
-        out.push(TBL[(n & 0x3F) as usize] as char);
-    }
-    let rem = chunks.remainder();
-    match rem.len() {
-        1 => {
-            let n = u32::from(rem[0]) << 16;
-            out.push(TBL[((n >> 18) & 0x3F) as usize] as char);
-            out.push(TBL[((n >> 12) & 0x3F) as usize] as char);
-            out.push('=');
-            out.push('=');
-        }
-        2 => {
-            let n = (u32::from(rem[0]) << 16) | (u32::from(rem[1]) << 8);
-            out.push(TBL[((n >> 18) & 0x3F) as usize] as char);
-            out.push(TBL[((n >> 12) & 0x3F) as usize] as char);
-            out.push(TBL[((n >> 6) & 0x3F) as usize] as char);
-            out.push('=');
-        }
-        _ => {}
-    }
-    out
+fn webdav_err(msg: &str) -> Error {
+    Error::Sync(crate::sync::SyncError::Backend(SyncBackendError::WebDav(
+        msg.to_string(),
+    )))
 }
 
 fn normalize_dir_url(url: &str) -> String {
@@ -178,36 +165,9 @@ fn normalize_dir_url(url: &str) -> String {
     }
 }
 
-// Small extension trait to keep the main flow readable.
-trait BytesToVecAwait {
-    async fn bytes_to_vec_await(self) -> Result<Vec<u8>>;
-}
-
-impl BytesToVecAwait for reqwest::Response {
-    async fn bytes_to_vec_await(self) -> Result<Vec<u8>> {
-        self.bytes().await.map(|b| b.to_vec()).map_err(|e| {
-            Error::Sync(crate::sync::SyncError::Backend(SyncBackendError::WebDav(
-                e.to_string(),
-            )))
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn base64_matches_known_vectors() {
-        assert_eq!(base64_encode(b""), "");
-        assert_eq!(base64_encode(b"f"), "Zg==");
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-        assert_eq!(base64_encode(b"foo"), "Zm9v");
-        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
-        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
-        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
-        assert_eq!(base64_encode(b"user:pass"), "dXNlcjpwYXNz");
-    }
 
     #[test]
     fn normalize_dir_url_appends_slash() {
@@ -216,12 +176,14 @@ mod tests {
     }
 
     #[test]
-    fn blob_url_joins_filename() {
+    fn new_stores_normalized_base_and_blob_name() {
         let cfg = WebDavConfig {
             url: "https://x/dav".into(),
             username: "u".into(),
         };
         let be = WebDavBackend::new(&cfg);
-        assert_eq!(be.blob_url(), "https://x/dav/vault.age");
+        assert_eq!(be.base_url, "https://x/dav/");
+        // The blob name is fixed; reqwest_dav joins host + "vault.age".
+        assert_eq!(BLOB_NAME, "vault.age");
     }
 }

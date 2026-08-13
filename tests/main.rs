@@ -28,6 +28,7 @@ mod contract;
 mod e2e;
 mod sync_backend;
 mod sync_engine;
+mod sync_webdav;
 mod tui;
 
 /// Declarative CLI snapshot cases under `tests/cmd/`.
