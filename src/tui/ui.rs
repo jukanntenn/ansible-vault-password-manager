@@ -47,6 +47,13 @@ pub fn draw<S: crate::vault::VaultStore>(app: &mut App<'_, S>, frame: &mut Frame
         Mode::Search => draw_search_hint(frame, app),
         Mode::Normal => {}
     }
+
+    // Status overlay: drawn LAST so a popup's full-screen `Clear` cannot wipe
+    // it. This is the single unified feedback channel — operation messages
+    // (copy, add, errors, …) always render here on top of whatever popup is
+    // active, so e.g. copying from the ShowPassword view shows "Copied"
+    // immediately instead of only after leaving the view.
+    draw_status_overlay(frame, app);
 }
 
 fn draw_title<S: crate::vault::VaultStore>(frame: &mut Frame, area: Rect, app: &App<'_, S>) {
@@ -77,27 +84,50 @@ fn draw_list<S: crate::vault::VaultStore>(frame: &mut Frame, area: Rect, app: &m
 }
 
 fn draw_footer<S: crate::vault::VaultStore>(frame: &mut Frame, area: Rect, app: &App<'_, S>) {
-    let status = app.message.clone().unwrap_or_default();
+    // Only the hints row is rendered here. The status line is drawn separately
+    // by `draw_status_overlay` at the very end of `draw`, so that a popup's
+    // full-screen `Clear` cannot wipe it (see the copy-from-ShowPassword fix).
     let hints = contextual_hints(&app.mode);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Length(1)])
         .split(area);
-    let status_style = if status.is_empty() {
-        Style::default().add_modifier(Modifier::DIM)
-    } else {
-        Style::default()
-    };
-    let status_line = if status.is_empty() {
-        Line::from(" avpm")
-    } else {
-        Line::from(Span::styled(status, status_style))
-    };
-    frame.render_widget(Paragraph::new(status_line), chunks[0]);
     frame.render_widget(
         Paragraph::new(Line::from(hints)).style(Style::default().add_modifier(Modifier::BOLD)),
         chunks[1],
     );
+}
+
+/// Render the status message as a bottom overlay.
+///
+/// Drawn LAST in [`draw`], after every popup. Popups begin by clearing the
+/// full screen (`Clear` over `frame.area()`), which would wipe a status line
+/// rendered in the footer. By rendering the status here — on top of everything
+/// — operation feedback stays visible regardless of the active popup: copying
+/// a password from inside the ShowPassword view shows "Copied" immediately,
+/// and a form validation error shows inline without closing the form.
+fn draw_status_overlay<S: crate::vault::VaultStore>(frame: &mut Frame, app: &App<'_, S>) {
+    let area = frame.area();
+    if area.height < 2 {
+        return;
+    }
+    // Status occupies the top row of the footer band (the row above the hints).
+    let rect = Rect {
+        x: 0,
+        y: area.height - 2,
+        width: area.width,
+        height: 1,
+    };
+    let status = app.message.clone().unwrap_or_default();
+    let line = if status.is_empty() {
+        Line::from(Span::styled(
+            " avpm",
+            Style::default().add_modifier(Modifier::DIM),
+        ))
+    } else {
+        Line::from(status)
+    };
+    frame.render_widget(Paragraph::new(line), rect);
 }
 
 /// Mode-specific keybinding hints (contextual footer).

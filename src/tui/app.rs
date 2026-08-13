@@ -292,6 +292,9 @@ impl<'a, S: VaultStore> App<'a, S> {
             KeyCode::Char('a' | 'n') => self.open_form(FormKind::Add),
             KeyCode::Char('d') => {
                 if self.selected_id().is_some() {
+                    // Clear stale feedback so the delete result renders fresh
+                    // (mirrors `enter_show_password` / `open_form`).
+                    self.message = None;
                     self.mode = Mode::ConfirmDelete;
                 }
             }
@@ -515,6 +518,11 @@ impl<'a, S: VaultStore> App<'a, S> {
         if matches!(kind, FormKind::Edit | FormKind::Rename) && self.selected_id().is_none() {
             return;
         }
+        // Clear stale feedback from a prior action: a fresh form starts with no
+        // status so its own result (success/error) renders cleanly via the
+        // overlay, without diff-overlap against an old message. Mirrors
+        // `enter_show_password`.
+        self.message = None;
         self.form_fields = (0..kind.field_count())
             .map(|i| {
                 let mask = kind.is_secret_field(i).then_some('•');
@@ -525,6 +533,13 @@ impl<'a, S: VaultStore> App<'a, S> {
     }
 
     /// Commit the active form: validate inputs, apply via store/index, reload.
+    ///
+    /// The form closes (mode → Normal) **only on success**. On any failure
+    /// (validation or store error) the form stays open so the user keeps their
+    /// typed input and can fix/resubmit; the error message is surfaced via the
+    /// status overlay, which renders on top of the form. The `selected_id`
+    /// guards still exit to Normal because they are precondition failures (no
+    /// selection to act on), not user-correctable input.
     fn commit_form(&mut self, kind: FormKind) {
         let values: Vec<String> = self.form_fields.iter().map(TextField::value).collect();
         match kind {
@@ -534,12 +549,10 @@ impl<'a, S: VaultStore> App<'a, S> {
                 let confirm = values.get(2).cloned().unwrap_or_default();
                 if id.is_empty() {
                     self.message = Some("✗ vault-id cannot be empty".to_string());
-                    self.mode = Mode::Normal;
                     return;
                 }
                 if pw != confirm {
                     self.message = Some("✗ passwords do not match".to_string());
-                    self.mode = Mode::Normal;
                     return;
                 }
                 match self.store.set(&id, &VaultSecret::new(pw)) {
@@ -553,7 +566,6 @@ impl<'a, S: VaultStore> App<'a, S> {
                     }
                     Err(e) => {
                         self.message = Some(format!("✗ Add failed: {e}"));
-                        self.mode = Mode::Normal;
                     }
                 }
             }
@@ -566,7 +578,6 @@ impl<'a, S: VaultStore> App<'a, S> {
                 let confirm = values.get(1).cloned().unwrap_or_default();
                 if pw != confirm {
                     self.message = Some("✗ passwords do not match".to_string());
-                    self.mode = Mode::Normal;
                     return;
                 }
                 match self.store.set(&id, &VaultSecret::new(pw)) {
@@ -576,7 +587,6 @@ impl<'a, S: VaultStore> App<'a, S> {
                     }
                     Err(e) => {
                         self.message = Some(format!("✗ Edit failed: {e}"));
-                        self.mode = Mode::Normal;
                     }
                 }
             }
@@ -588,7 +598,6 @@ impl<'a, S: VaultStore> App<'a, S> {
                 let to = values.first().cloned().unwrap_or_default();
                 if to.is_empty() {
                     self.message = Some("✗ new id cannot be empty".to_string());
-                    self.mode = Mode::Normal;
                     return;
                 }
                 match self.store.get(&from) {
@@ -607,12 +616,10 @@ impl<'a, S: VaultStore> App<'a, S> {
                         }
                         Err(e) => {
                             self.message = Some(format!("✗ Rename failed: {e}"));
-                            self.mode = Mode::Normal;
                         }
                     },
                     Err(e) => {
                         self.message = Some(format!("✗ Rename failed: {e}"));
-                        self.mode = Mode::Normal;
                     }
                 }
             }
@@ -748,6 +755,41 @@ mod tests {
         // reports a copy failure — but the store *was* read (the core contract).
         // We only assert that a message was set (the operation happened inline).
         assert!(app.message.is_some(), "copy should produce a message");
+    }
+
+    /// Regression for the copy-feedback-fragmentation bug: pressing `y` inside
+    /// the ShowPassword view sets a status message that MUST be visible in the
+    /// render while the view is still open. Previously every popup's
+    /// full-screen `Clear` wiped the footer (where the status lived), so
+    /// "Copied" only appeared after the user left the view. The status overlay
+    /// is now drawn last, on top of every popup.
+    #[test]
+    fn copy_feedback_visible_inside_show_password() {
+        let (_d, store, idx) = setup(&["dev"]);
+        let mut app = make_app(&store, &idx);
+        // Enter the ShowPassword view.
+        app.handle_event(Some(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert!(matches!(app.mode, Mode::ShowPassword { .. }));
+        // Trigger a copy. The clipboard may be unavailable on a headless box
+        // (→ "Copy failed"), but either way a status message is set — and that
+        // is what must render on top of the popup.
+        app.handle_event(Some(key('y')));
+        let msg = app
+            .message
+            .clone()
+            .expect("copy should set a status message");
+        // Copy must not exit the ShowPassword view.
+        assert!(
+            matches!(app.mode, Mode::ShowPassword { .. }),
+            "copy should stay in ShowPassword"
+        );
+        // The message must appear in the rendered buffer despite the popup's
+        // full-screen `Clear` — proving the overlay renders on top.
+        let rendered = render_string(&mut app);
+        assert!(
+            rendered.contains(&msg),
+            "status message {msg:?} must be visible inside ShowPassword;\nrender:\n{rendered}"
+        );
     }
 
     #[test]
@@ -914,13 +956,25 @@ mod tests {
             app.handle_event(Some(key(c)));
         }
         app.handle_event(Some(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-        assert_eq!(app.mode, Mode::Normal);
+        // Validation failure keeps the form open (input preserved) so the user
+        // can fix and resubmit; the error is surfaced via the status overlay.
+        assert!(matches!(
+            app.mode,
+            Mode::Form {
+                kind: FormKind::Add,
+                ..
+            }
+        ));
         assert!(store.get("v").is_err());
         assert!(app
             .message
             .as_deref()
             .unwrap_or("")
             .contains("do not match"));
+        // Typed input is preserved across the failed submit.
+        assert_eq!(app.form_fields()[0].value(), "v");
+        assert_eq!(app.form_fields()[1].value(), "a");
+        assert_eq!(app.form_fields()[2].value(), "b");
     }
 
     #[test]
