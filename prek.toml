@@ -1,0 +1,111 @@
+# prek configuration — single source of truth for avpm's quality pipeline.
+#
+# Every formatting / lint / check rule lives HERE and only here. AI post-edit
+# hooks (.zcode/.claude) run `prek run --group fmt --files <edited>`, AI Stop
+# runs `prek run --group lint --all-files`, CI runs `prek run --all-files`. No
+# parallel fmt/lint/check definition exists in CI or AI hooks — that is how
+# drift is prevented.
+#
+# Install: prek install   (registers pre-commit + commit-msg git hooks)
+
+default_install_hook_types = ["pre-commit", "commit-msg"]
+
+# Cargo.lock is the only auto-generated file in this repo (bin crate, must be
+# committed). The builtin byte-fixers below exclude it — Cargo owns those
+# bytes, and a fixer diverging from raw `cargo generate-lockfile` output would
+# just create noise. No codegen step exists (no build.rs/xtask/prost), so no
+# drift gate is needed; `cargo-lock-fresh` in the check group covers freshness.
+
+# ---- Read-only builtin checks (commit + CI; cover the whole tree) ----
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "check-yaml" },         # .github/workflows/ci.yml
+  { id = "check-toml" },         # Cargo.toml, deny.toml, tests/cmd/*.toml
+  { id = "check-merge-conflict" },
+  { id = "check-added-large-files" },
+  { id = "detect-private-key" }, # high-value: this is a vault-password tool
+]
+
+# ---- fmt group: mutating fixers (AI post-edit + commit) ----
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "trailing-whitespace", exclude = "^Cargo\\.lock$", groups = ["fmt"] },
+  { id = "end-of-file-fixer", exclude = "^Cargo\\.lock$", groups = ["fmt"] },
+  { id = "mixed-line-ending", args = ["--fix=lf"], exclude = "^Cargo\\.lock$", groups = ["fmt"] },
+]
+
+[[repos]]
+repo = "local"
+
+# fmt: whole-project rustfmt (mutating). PostToolUse fires per-file but
+# `cargo fmt --all` is sub-second and respects the manifest edition setting.
+[[repos.hooks]]
+id = "cargo-fmt"
+name = "cargo fmt (write)"
+language = "system"
+entry = "cargo fmt --all"
+files = "\\.rs$"
+pass_filenames = false
+groups = ["fmt"]
+stages = ["pre-commit"]
+
+# lint: read-only quality gate (AI Stop + commit + CI)
+[[repos.hooks]]
+id = "cargo-fmt-check"
+name = "cargo fmt --check"
+language = "system"
+entry = "cargo fmt --all -- --check"
+files = "\\.rs$"
+pass_filenames = false
+groups = ["lint"]
+stages = ["pre-commit"]
+
+[[repos.hooks]]
+id = "cargo-clippy"
+name = "cargo clippy (-D warnings)"
+language = "system"
+entry = "cargo clippy --all-targets --features testing -- -D warnings"
+files = "\\.rs$"
+pass_filenames = false
+groups = ["lint"]
+stages = ["pre-commit"]
+
+# cargo deny: supply-chain gate (advisories / licenses / bans / sources). Lives
+# in the `manual` stage — NOT on every local commit — because its advisory DB
+# can flag transitive deps a contributor cannot fix without bumping an upstream
+# crate (e.g. ratatui -> paste RUSTSEC-2024-0436), which would block all their
+# commits. CI runs it explicitly via `prek run --hook-stage manual`. The
+# lock-freshness hook below stays in pre-commit: it is offline, fast, and the
+# fix (regenerate Cargo.lock) is always in the contributor's hands.
+[[repos.hooks]]
+id = "cargo-deny"
+name = "cargo deny check"
+language = "system"
+entry = "cargo deny check"
+files = "^(Cargo\\.lock|Cargo\\.toml|deny\\.toml)$"
+pass_filenames = false
+groups = ["check"]
+stages = ["manual"]
+
+# Cargo.lock freshness — the only generated file; fails if Cargo.toml added a
+# dependency but Cargo.lock was not regenerated. Lighter than a full build.
+[[repos.hooks]]
+id = "cargo-lock-fresh"
+name = "Cargo.lock freshness (--locked)"
+language = "system"
+entry = "cargo fetch --locked"
+files = "^(Cargo\\.toml|Cargo\\.lock)$"
+pass_filenames = false
+groups = ["check"]
+stages = ["pre-commit"]
+
+# ---- commit-msg: Conventional Commits ----
+[[repos.hooks]]
+id = "conventional-commits"
+name = "commit message format"
+language = "system"
+entry = "scripts/check_commit_msg.py"
+pass_filenames = true
+stages = ["commit-msg"]

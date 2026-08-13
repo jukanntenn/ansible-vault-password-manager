@@ -43,7 +43,7 @@ jobs:
           target/release/avpm-client --vault-id __ci_missing__; [ $? -eq 2 ] || [ $? -eq 5 ]
 
   lint:
-    name: Lint (fmt + clippy)
+    name: "Lint (prek: fmt + clippy + deny + builtins)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,24 +51,39 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
-      - name: cargo clippy
-        run: cargo clippy --all-targets --features testing -- -D warnings
+      # prek's local hooks invoke `cargo deny` directly; install the binary so
+      # the check group runs here alongside the lint group's clippy/fmt.
+      - uses: taiki-e/install-action@cargo-deny
+      - uses: astral-sh/setup-uv@v4
+      # Single source of truth: every fmt/lint/check rule lives in prek.toml.
+      # CI just installs the toolchains prek's hooks call and runs the same
+      # `prek run --all-files` developers run locally. No parallel definition.
+      - name: Validate prek config
+        run: uvx prek validate-config prek.toml
+      - name: prek run --all-files (fmt + lint + lock-fresh + builtins)
+        # pre-commit stage: everything a contributor can fix locally. Mutating
+        # fmt hooks make prek exit non-zero if any file needed reformatting.
+        run: uvx prek run --all-files
+      - name: prek run --hook-stage manual (cargo deny supply-chain)
+        # manual stage: cargo deny (advisories/licenses/bans/sources). Kept out
+        # of local pre-commit so transitive advisories (e.g. ratatui -> paste)
+        # cannot block a contributor's commits; CI still enforces it.
+        run: uvx prek run --hook-stage manual --all-files
 
   audit:
-    name: Supply-chain (cargo audit + cargo deny)
+    name: Supply-chain (cargo audit)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-deny
+      # `cargo deny check` lives in prek.toml and runs in the lint job's
+      # `prek run --all-files`. This job keeps only cargo audit, which queries
+      # the RustSec advisory DB and needs network at run time — too slow for
+      # every local commit, so it stays a CI-only gate.
       - uses: taiki-e/install-action@cargo-audit
       - name: cargo audit
         run: cargo audit
-      - name: cargo deny
-        run: cargo deny check
 
   ignored-tests:
     name: Real-system tests (keyring + git)
