@@ -50,14 +50,15 @@ Vault passwords, with end-to-end encrypted multi-device sync.
   copy / show / delete / add / edit / rename all execute inside the event
   loop. The terminal no longer tears down to the raw shell mid-operation
   (the `PendingAction` queue and outer rebuild loop are gone).
-- **In-TUI forms**: add / edit / rename use `tui-textarea` popups with masked
-  password fields and a `[g] generate` shortcut, instead of dropping to a
-  terminal `rpassword` prompt.
+- **In-TUI forms**: add / edit / rename use in-tree input-widget popups with
+  masked password fields and a `[g] generate` shortcut, instead of dropping to
+  a terminal `rpassword` prompt.
 - **Toggle password reveal**: Space now toggles show/hide on every terminal
   (the Kitty keyboard-enhancement protocol dependency is removed).
 
 ### Dependencies
 
-- `tui-input` replaced by `tui-textarea` (multi-field forms, masked input).
-- `ratatui` pinned to 0.29 (aligns with `tui-textarea` 0.7; 0.30 pulls a
-  second ratatui copy and the `Widget` impls don't line up).
+- `tui-input` / `tui-textarea` replaced by an in-tree single-line input
+  widget (`src/tui/input.rs`, masked fields with full cursor editing).
+- `ratatui` bumped to 0.30 (drops the unmaintained `paste` proc-macro,
+  RUSTSEC-2024-0436; `tui-textarea` 0.7 only supports ratatui 0.29).

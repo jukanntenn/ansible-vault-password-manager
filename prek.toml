@@ -74,11 +74,11 @@ stages = ["pre-commit"]
 
 # cargo deny: supply-chain gate (advisories / licenses / bans / sources). Lives
 # in the `manual` stage — NOT on every local commit — because its advisory DB
-# can flag transitive deps a contributor cannot fix without bumping an upstream
-# crate (e.g. ratatui -> paste RUSTSEC-2024-0436), which would block all their
-# commits. CI runs it explicitly via `prek run --hook-stage manual`. The
-# lock-freshness hook below stays in pre-commit: it is offline, fast, and the
-# fix (regenerate Cargo.lock) is always in the contributor's hands.
+# can flag transitive advisories a contributor cannot fix without bumping an
+# upstream crate, which would block all their commits. CI runs it explicitly
+# via `prek run --hook-stage manual`. The lock-freshness hook below stays in
+# pre-commit: it is offline, fast, and the fix (regenerate Cargo.lock) is
+# always in the contributor's hands.
 [[repos.hooks]]
 id = "cargo-deny"
 name = "cargo deny check"

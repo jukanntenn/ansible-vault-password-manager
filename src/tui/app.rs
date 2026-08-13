@@ -7,15 +7,16 @@
 //! and the screen never flickers. Operation feedback is written to
 //! `self.message` and rendered on the next frame.
 //!
-//! Forms (add/edit/rename) are rendered with `tui-textarea` popups. Password
-//! fields are masked at render time (see [`super::ui`]); the underlying
-//! `TextArea` holds the real text so full cursor editing works.
+//! Forms (add/edit/rename) are rendered as popups of in-tree [`input`]
+//! fields. Password fields are masked at render time (see [`super::ui`]); the
+//! underlying [`input::TextField`] holds the real text so full cursor editing
+//! works.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::ListState;
-use tui_textarea::TextArea;
 
 use super::event::EventResult;
+use super::input::TextField;
 use crate::error::Result;
 use crate::index::VaultIndex;
 use crate::vault::{VaultSecret, VaultStore};
@@ -114,8 +115,8 @@ pub struct App<'a, S: VaultStore> {
     pub copy_deadline: Option<std::time::Instant>,
     /// Clipboard auto-clear window in seconds (0 = disabled).
     clipboard_clear_seconds: u16,
-    /// Form text areas, one per active field. Only meaningful in `Mode::Form`.
-    form_fields: Vec<TextArea<'static>>,
+    /// Form text fields, one per active field. Only meaningful in `Mode::Form`.
+    form_fields: Vec<TextField>,
     quit: bool,
 }
 
@@ -385,8 +386,7 @@ impl<'a, S: VaultStore> App<'a, S> {
                 if kind.is_secret_field(focus) {
                     if let Ok(secret) = crate::password::generate(32, false) {
                         if let Some(field) = self.form_fields.get_mut(focus) {
-                            field.delete_line_by_head();
-                            field.insert_str(secret.as_str());
+                            field.replace(secret.as_str());
                         }
                     }
                 }
@@ -508,20 +508,17 @@ impl<'a, S: VaultStore> App<'a, S> {
         self.mode = Mode::Normal;
     }
 
-    /// Open a form of the given kind, with fresh empty text areas. Password
-    /// fields are masked via tui-textarea's `set_mask_char`, which keeps full
-    /// cursor/editing capability while displaying only `•`.
+    /// Open a form of the given kind, with fresh empty text fields. Password
+    /// fields are masked via [`TextField::new`], which keeps full cursor /
+    /// editing capability while displaying only `•`.
     fn open_form(&mut self, kind: FormKind) {
         if matches!(kind, FormKind::Edit | FormKind::Rename) && self.selected_id().is_none() {
             return;
         }
         self.form_fields = (0..kind.field_count())
             .map(|i| {
-                let mut ta = TextArea::default();
-                if kind.is_secret_field(i) {
-                    ta.set_mask_char('•');
-                }
-                ta
+                let mask = kind.is_secret_field(i).then_some('•');
+                TextField::new(mask)
             })
             .collect();
         self.mode = Mode::Form { kind, focus: 0 };
@@ -529,11 +526,7 @@ impl<'a, S: VaultStore> App<'a, S> {
 
     /// Commit the active form: validate inputs, apply via store/index, reload.
     fn commit_form(&mut self, kind: FormKind) {
-        let values: Vec<String> = self
-            .form_fields
-            .iter()
-            .map(|ta| ta.lines().join(""))
-            .collect();
+        let values: Vec<String> = self.form_fields.iter().map(TextField::value).collect();
         match kind {
             FormKind::Add => {
                 let id = values.first().cloned().unwrap_or_default();
@@ -626,15 +619,15 @@ impl<'a, S: VaultStore> App<'a, S> {
         }
     }
 
-    /// The active form's field text areas (for rendering). Empty outside forms.
+    /// The active form's field text inputs (for rendering). Empty outside forms.
     #[must_use]
-    pub fn form_fields(&self) -> &[TextArea<'static>] {
+    pub fn form_fields(&self) -> &[TextField] {
         &self.form_fields
     }
 
-    /// Mutable access to the form text areas (for setting block/style before
+    /// Mutable access to the form fields (for setting block/style before
     /// render, and for cursor positioning).
-    pub fn form_fields_mut(&mut self) -> &mut [TextArea<'static>] {
+    pub fn form_fields_mut(&mut self) -> &mut [TextField] {
         &mut self.form_fields
     }
 }
@@ -1039,8 +1032,8 @@ mod tests {
         );
 
         // The generated value must reach the buffer only as `•`: read the real
-        // secret back from the textarea and confirm it is absent from the render.
-        let generated: String = app.form_fields()[1].lines().join("");
+        // secret back from the field and confirm it is absent from the render.
+        let generated: String = app.form_fields()[1].value();
         assert!(
             !generated.is_empty(),
             "[g] did not populate the password field"

@@ -2,9 +2,9 @@
 //!
 //! Single view: title bar (count + quit hint), list area (ListState), footer
 //! (status line + keybinding hints). Popups render as centered panels over the
-//! main view. The Form popup renders one `tui-textarea` per field with the
-//! focused field highlighted; password fields are masked at the textarea level
-//! (see [`super::app`]).
+//! main view. The Form popup renders one [`super::input::TextField`] per field
+//! with the focused field highlighted; password fields are masked at the field
+//! level (see [`super::app`]).
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -198,7 +198,7 @@ fn draw_show_password<S: crate::vault::VaultStore>(
     frame.render_widget(p, r);
 }
 
-/// Render the add/edit/rename form popup. Each field is a labeled textarea;
+/// Render the add/edit/rename form popup. Each field is a labeled input;
 /// the focused field gets a highlighted border.
 fn draw_form<S: crate::vault::VaultStore>(
     frame: &mut Frame,
@@ -238,15 +238,15 @@ fn draw_form<S: crate::vault::VaultStore>(
         rects[0],
     );
 
-    // Set each textarea's border style (focused vs unfocused).
+    // Set each field's border style (focused vs unfocused).
     for i in 0..n {
         let border_style = if i == focus {
             Style::default().add_modifier(Modifier::BOLD)
         } else {
             Style::default().add_modifier(Modifier::DIM)
         };
-        if let Some(ta) = app.form_fields_mut().get_mut(i) {
-            ta.set_block(
+        if let Some(field) = app.form_fields_mut().get_mut(i) {
+            field.set_block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(border_style),
@@ -254,7 +254,7 @@ fn draw_form<S: crate::vault::VaultStore>(
         }
     }
 
-    // Render labels and textareas.
+    // Render labels and fields.
     for i in 0..n {
         let label_rect = rects[1 + i * 2];
         let ta_rect = rects[1 + i * 2 + 1];
@@ -268,18 +268,17 @@ fn draw_form<S: crate::vault::VaultStore>(
             Paragraph::new(Line::from(Span::styled(label, label_style))),
             label_rect,
         );
-        if let Some(ta) = app.form_fields().get(i) {
-            frame.render_widget(ta, ta_rect);
+        if let Some(field) = app.form_fields().get(i) {
+            frame.render_widget(field, ta_rect);
         }
     }
 
-    // Position the terminal cursor inside the focused textarea so the user
+    // Position the terminal cursor inside the focused field so the user
     // sees a blinking cursor and text editing works as expected.
-    if let Some(ta) = app.form_fields().get(focus) {
+    if let Some(field) = app.form_fields().get(focus) {
         let ta_rect = rects[1 + focus * 2 + 1];
-        let (cy, cx) = ta.cursor();
-        let cursor_x = ta_rect.x + 1 + cx as u16;
-        let cursor_y = ta_rect.y + 1 + cy as u16;
+        let cursor_x = ta_rect.x + 1 + field.cursor_col() as u16;
+        let cursor_y = ta_rect.y + 1;
         frame.set_cursor_position((cursor_x, cursor_y));
     }
 }
