@@ -39,8 +39,14 @@ jobs:
           cargo build --release
           test -x target/release/avpm
           test -x target/release/avpm-client
-          # Unknown vault-id must exit 2 (Ansible contract).
-          target/release/avpm-client --vault-id __ci_missing__; [ $? -eq 2 ] || [ $? -eq 5 ]
+          # Unknown vault-id must exit 2 (Ansible contract). The step runs with
+          # `set -e`, which would abort on avpm-client's expected failure
+          # before the exit-code check ran, so capture the code explicitly.
+          set +e
+          target/release/avpm-client --vault-id __ci_missing__
+          rc=$?
+          set -e
+          [ "$rc" -eq 2 ] || [ "$rc" -eq 5 ]
 
   lint:
     name: "Lint (prek: fmt + clippy + deny + builtins)"
@@ -66,8 +72,9 @@ jobs:
         run: uvx prek run --all-files
       - name: prek run --hook-stage manual (cargo deny supply-chain)
         # manual stage: cargo deny (advisories/licenses/bans/sources). Kept out
-        # of local pre-commit so transitive advisories (e.g. ratatui -> paste)
-        # cannot block a contributor's commits; CI still enforces it.
+        # of local pre-commit so transitive advisories a contributor cannot fix
+        # without an upstream bump cannot block their commits; CI still enforces
+        # it.
         run: uvx prek run --hook-stage manual --all-files
 
   audit:
