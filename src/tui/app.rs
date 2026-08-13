@@ -681,7 +681,10 @@ mod tests {
 
     /// Render `app` to a 100×30 TestBackend and run `f` on the resulting
     /// buffer (cells include symbol + style).
-    fn with_buffer<R>(app: &mut App<'_, MockStore>, f: impl FnOnce(&ratatui::buffer::Buffer) -> R) -> R {
+    fn with_buffer<R>(
+        app: &mut App<'_, MockStore>,
+        f: impl FnOnce(&ratatui::buffer::Buffer) -> R,
+    ) -> R {
         let backend = ratatui::backend::TestBackend::new(100, 30);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
@@ -993,10 +996,7 @@ mod tests {
         for c in "dev".chars() {
             app.handle_event(Some(key(c)));
         }
-        app.handle_event(Some(KeyEvent::new(
-            KeyCode::Tab,
-            KeyModifiers::NONE,
-        )));
+        app.handle_event(Some(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
         for c in "secret123".chars() {
             app.handle_event(Some(key(c)));
         }

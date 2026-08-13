@@ -113,8 +113,7 @@ fn ansible_vault_round_trip_via_avpm_client() {
     // view: ansible-vault fetches the same password via avpm-client and writes
     // the decrypted content to stdout.
     let mut view = StdCommand::new("ansible-vault");
-    view.args(["view", "--vault-id", &vault_id_arg])
-        .arg(&plain);
+    view.args(["view", "--vault-id", &vault_id_arg]).arg(&plain);
     common::isolate(&mut view, dir.path());
     let view_out = view.output().unwrap();
     assert!(

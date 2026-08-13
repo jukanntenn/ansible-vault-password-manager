@@ -116,7 +116,11 @@ fn ansible_form_matches_when_locked() {
 fn no_command_exits_1() {
     let dir = tempfile::TempDir::new().unwrap();
     let out = run(common::avpm, dir.path(), &[]);
-    assert_eq!(out.code, 1, "expected exit 1, got {}: {}", out.code, out.stderr);
+    assert_eq!(
+        out.code, 1,
+        "expected exit 1, got {}: {}",
+        out.code, out.stderr
+    );
     assert_parity(dir.path(), &[]);
 }
 
