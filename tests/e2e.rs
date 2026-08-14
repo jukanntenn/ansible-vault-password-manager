@@ -231,7 +231,8 @@ fn acceptance_flow_set_push_clone_pull_status() {
         assert!(list_stdout.contains(id), "list missing {id}: {list_stdout}");
     }
 
-    // F6: status reports no differences.
+    // F6: status reports no differences. The label is column-aligned in
+    // sync_cmd.rs ("unchanged" + 4 spaces + ":"), so match that exact format.
     let status = avpm()
         .arg("sync")
         .arg("status")
@@ -241,7 +242,7 @@ fn acceptance_flow_set_push_clone_pull_status() {
     assert!(status.status.success());
     let status_stdout = String::from_utf8_lossy(&status.stdout);
     assert!(
-        status_stdout.contains("unchanged  : 3"),
+        status_stdout.contains("unchanged    : 3"),
         "unexpected status: {status_stdout}"
     );
 

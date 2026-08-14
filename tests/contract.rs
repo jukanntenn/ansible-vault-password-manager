@@ -40,6 +40,32 @@ fn run(make: fn() -> Command, dir: &Path, args: &[&str]) -> BinOut {
     }
 }
 
+/// RAII guard that guarantees the shared session-collection master-passphrase
+/// cache is empty for a test that asserts exit 5 (Locked), then restores the
+/// prior value on drop — even if the test panics. Required because parallel e2e
+/// tests seed the *same* real cache; without this, a polluted cache turns the
+/// expected exit 5 into exit 2 (NotFound) on any host with a Secret Service
+/// daemon. No-op on daemon-less hosts (snapshot/restore are best-effort).
+struct EmptyCacheGuard {
+    previous: Option<String>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl EmptyCacheGuard {
+    fn new() -> Self {
+        let _lock = common::cache_test_lock();
+        let previous = common::snapshot_cache();
+        common::restore_cache(None);
+        Self { previous, _lock }
+    }
+}
+
+impl Drop for EmptyCacheGuard {
+    fn drop(&mut self) {
+        common::restore_cache(self.previous.take());
+    }
+}
+
 /// Assert `avpm` and `avpm-client` agree completely (exit + stdout + stderr)
 /// for one argument shape.
 fn assert_parity(dir: &Path, args: &[&str]) {
@@ -102,6 +128,7 @@ fn config_path_matches() {
 /// no cached passphrase: both binaries exit 5 (locked) with identical stderr.
 #[test]
 fn ansible_form_matches_when_locked() {
+    let _cache = EmptyCacheGuard::new();
     let dir = tempfile::TempDir::new().unwrap();
     common::write_config(dir.path(), "[storage]\nbackend = \"file\"\n");
     assert_parity(dir.path(), &["--vault-id", "no_such_id"]);
@@ -141,9 +168,11 @@ fn malformed_config_exits_3() {
 
 /// File backend, no cached passphrase, non-interactive ⇒ exit 5 (locked), the
 /// exact contract Ansible's non-interactive calls rely on. Deterministic
-/// regardless of keyring availability because the file backend is forced.
+/// regardless of keyring availability because the file backend is forced and
+/// the shared session cache is isolated by [`EmptyCacheGuard`].
 #[test]
 fn file_backend_get_exits_5() {
+    let _cache = EmptyCacheGuard::new();
     let dir = tempfile::TempDir::new().unwrap();
     common::write_config(dir.path(), "[storage]\nbackend = \"file\"\n");
     let out = run(common::avpm, dir.path(), &["get", "x"]);
