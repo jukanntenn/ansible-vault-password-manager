@@ -1,22 +1,30 @@
 //! `avpm unlock` - cache credentials for the active backend.
 //!
-//! Behavior depends on the resolved backend ([`super::backend_kind`]):
+//! Behavior depends on the resolved backend ([`super::resolve_effective_backend`]):
 //!
-//! - **Keyring backend** (macOS Keychain / Linux Secret Service): ensure the
-//!   default collection exists and is unlocked. On a fresh headless/WSL2 box
-//!   the (`login`) default collection may be absent or locked; this creates it
-//!   (GUI prompt) or unlocks it (GUI prompt) so subsequent reads/writes —
-//!   including ansible's non-interactive `avpm-client --vault-id <id>` — work
-//!   without a prompt. It never creates `store.age`, so a user who runs `avpm
-//!   unlock` on a keyring-capable system is not pulled onto the file backend.
+//! - **Keyring backend** (explicit `Keyring`, or `Auto` that preferred it):
+//!   ensure the default collection exists and is unlocked. On a fresh
+//!   headless/WSL2 box the (`login`) default collection may be absent or
+//!   locked; this creates it (GUI prompt) or unlocks it (GUI prompt) so
+//!   subsequent reads/writes — including ansible's non-interactive
+//!   `avpm-client --vault-id <id>` — work without a prompt. It never creates
+//!   `store.age`, so a user who runs `avpm unlock` on a keyring-capable system
+//!   is not pulled onto the file backend.
 //!
-//! - **File backend** (keyring unavailable, e.g. headless WSL2): the file
-//!   store encrypts `store.age` with a master passphrase. `unlock` verifies
-//!   (existing store) or sets (first run) that passphrase and caches it in
-//!   the session keyring so subsequent non-interactive calls — notably
-//!   ansible's `avpm-client --vault-id <id>` — can decrypt without prompting.
-//!   It does **not** create an empty `store.age`; the file is born naturally
-//!   on the first real `set`.
+//! - **File backend** (explicit `backend = "file"`, or `Auto` with the daemon
+//!   up but no GUI): the file store encrypts `store.age` with a master
+//!   passphrase. `unlock` verifies (existing store) or sets (first run) that
+//!   passphrase and caches it in the session collection so subsequent
+//!   non-interactive calls — notably ansible's `avpm-client --vault-id <id>`
+//!   — can decrypt without prompting. It does **not** create an empty
+//!   `store.age`; the file is born naturally on the first real `set`. In the
+//!   `Auto`-no-GUI case a one-time nudge points the user at the keyring
+//!   backend.
+//!
+//! - **`Auto` with the daemon unreachable**: [`super::resolve_effective_backend`]
+//!   returns an error (with guidance) and `unlock` stops — the Secret Service
+//!   daemon is the floor, so the user is guided to enable the keyring (or to
+//!   explicitly opt into the file backend) rather than silently degrading.
 
 use std::path::Path;
 
@@ -25,28 +33,43 @@ use crate::error::Result;
 use crate::paths;
 use crate::vault::{master, FileStore, VaultError, VaultStore};
 
-use super::backend_kind;
-use crate::config::StorageBackend;
+use super::{resolve_effective_backend, ResolvedBackend};
 
 /// Execute the unlock flow, dispatching on the resolved backend.
+///
+/// On `Auto` with the Secret Service daemon unreachable, [`resolve_effective_backend`]
+/// returns an error (with guidance) before we get here — `avpm unlock` then stops
+/// and guides the user to enable the keyring (the daemon is the floor).
 pub async fn execute(cfg: &Config) -> Result<()> {
-    match backend_kind(cfg) {
-        StorageBackend::Keyring => {
+    match resolve_effective_backend(cfg)? {
+        ResolvedBackend::Keyring => {
             // Create the default collection if absent (GUI prompt) and unlock
             // it if locked (GUI prompt). Idempotent: a ready collection is a
             // no-op. This is the one command responsible for making the
             // keyring backend usable after a daemon restart on WSL2/headless.
             crate::vault::ss::ensure_default_collection()?;
             eprintln!(
-                "keyring backend ready (default collection exists and is unlocked).\n  \
-                 passwords are stored in the OS keyring and are available \
-                 without a separate per-command unlock step."
+                "keyring backend ready (OS keyring unlocked).\n  \
+                 vault passwords are read from the OS keyring with no per-command prompt.\n  \
+                 note: the sync master passphrase is separate — it is set on first \
+                 `avpm sync`, not here."
             );
             Ok(())
         }
-        // backend_kind collapses Auto into Keyring/File, so File (and the
-        // collapsed Auto) both route to the file-store unlock flow.
-        StorageBackend::File | StorageBackend::Auto => unlock_file_store().await,
+        ResolvedBackend::AutoFileNoGui => {
+            // Daemon up, but no GUI to create the collection: the file backend
+            // works (the session collection caches the master passphrase). Nudge
+            // the user once that they could switch to the keyring backend.
+            eprintln!(
+                "note: the OS keyring collection can't be created in this headless session, so\n\
+                 avpm is using the encrypted file backend. The master passphrase is still\n\
+                 session-cached (non-interactive calls work). To switch to the keyring backend,\n\
+                 run `avpm unlock` once from a GUI (desktop/WSLg) session."
+            );
+            unlock_file_store().await
+        }
+        // Explicit file backend: the user opted in with eyes open.
+        ResolvedBackend::File => unlock_file_store().await,
     }
 }
 
