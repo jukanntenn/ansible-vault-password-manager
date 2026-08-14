@@ -68,7 +68,14 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # hand-rolled HEAD/PUT/GET + base64 Basic-auth code. Conditional PUTs (If-Match
 # / If-None-Match) are done via the public `start_request` escape hatch, which
 # returns a raw reqwest::RequestBuilder we attach headers to.
-reqwest_dav = "0.2.2"
+#
+# `default-features = false`: reqwest_dav's default pulls `reqwest/default`
+# (native-tls → openssl-sys), which re-enables native-tls on the shared `reqwest`
+# via feature unification even though avpm configures reqwest rustls-only below.
+# That makes the build require pkg-config/libssl-dev for no functional gain.
+# Pin the rustls/webpki-roots feature to match avpm's reqwest config ("rustls-tls
+# stays our TLS") so WebDAV uses the same rustls TLS as everything else.
+reqwest_dav = { version = "0.2.2", default-features = false, features = ["rustls-tls-webpki-roots"] }
 
 # === TUI ===
 # ratatui 0.30 dropped the unmaintained `paste` proc-macro dependency
