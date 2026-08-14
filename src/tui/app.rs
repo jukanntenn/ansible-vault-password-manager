@@ -290,13 +290,11 @@ impl<'a, S: VaultStore> App<'a, S> {
             KeyCode::Enter => self.do_show(),
             KeyCode::Char('e') => self.open_form(FormKind::Edit),
             KeyCode::Char('a' | 'n') => self.open_form(FormKind::Add),
-            KeyCode::Char('d') => {
-                if self.selected_id().is_some() {
-                    // Clear stale feedback so the delete result renders fresh
-                    // (mirrors `enter_show_password` / `open_form`).
-                    self.message = None;
-                    self.mode = Mode::ConfirmDelete;
-                }
+            KeyCode::Char('d') if self.selected_id().is_some() => {
+                // Clear stale feedback so the delete result renders fresh
+                // (mirrors `enter_show_password` / `open_form`).
+                self.message = None;
+                self.mode = Mode::ConfirmDelete;
             }
             KeyCode::Char('r') => self.open_form(FormKind::Rename),
             KeyCode::Char('/') => {
