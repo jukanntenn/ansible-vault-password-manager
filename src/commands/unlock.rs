@@ -2,12 +2,13 @@
 //!
 //! Behavior depends on the resolved backend ([`super::backend_kind`]):
 //!
-//! - **Keyring backend** (macOS Keychain / Linux Secret Service): the keyring
-//!   is already unlocked at the OS level, so there is nothing for avpm to do.
-//!   Prints an informational message and exits with no side effects — in
-//!   particular it never creates `store.age`, so a user who runs `avpm
-//!   unlock` on a keyring-capable system is not accidentally pulled onto the
-//!   file backend.
+//! - **Keyring backend** (macOS Keychain / Linux Secret Service): ensure the
+//!   default collection exists and is unlocked. On a fresh headless/WSL2 box
+//!   the (`login`) default collection may be absent or locked; this creates it
+//!   (GUI prompt) or unlocks it (GUI prompt) so subsequent reads/writes —
+//!   including ansible's non-interactive `avpm-client --vault-id <id>` — work
+//!   without a prompt. It never creates `store.age`, so a user who runs `avpm
+//!   unlock` on a keyring-capable system is not pulled onto the file backend.
 //!
 //! - **File backend** (keyring unavailable, e.g. headless WSL2): the file
 //!   store encrypts `store.age` with a master passphrase. `unlock` verifies
@@ -31,10 +32,15 @@ use crate::config::StorageBackend;
 pub async fn execute(cfg: &Config) -> Result<()> {
     match backend_kind(cfg) {
         StorageBackend::Keyring => {
+            // Create the default collection if absent (GUI prompt) and unlock
+            // it if locked (GUI prompt). Idempotent: a ready collection is a
+            // no-op. This is the one command responsible for making the
+            // keyring backend usable after a daemon restart on WSL2/headless.
+            crate::vault::ss::ensure_default_collection()?;
             eprintln!(
-                "keyring backend in use; unlock is not needed.\n  \
+                "keyring backend ready (default collection exists and is unlocked).\n  \
                  passwords are stored in the OS keyring and are available \
-                 without a separate unlock step."
+                 without a separate per-command unlock step."
             );
             Ok(())
         }

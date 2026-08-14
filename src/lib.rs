@@ -76,6 +76,7 @@ pub type AnyResult<T> = std::result::Result<T, anyhow::Error>;
 /// - `3` configuration error
 /// - `4` decryption failure
 /// - `5` file store locked (run `avpm unlock`)
+/// - `6` keyring backend locked (run `avpm unlock`; non-interactive only)
 #[allow(clippy::missing_errors_doc)]
 pub fn client_main() -> std::process::ExitCode {
     let runtime = tokio::runtime::Builder::new_multi_thread()

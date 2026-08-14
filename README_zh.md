@@ -63,6 +63,13 @@ gdbus call --session \
 （非持久化，无需 GUI），后续的 `avpm` 调用——包括 Ansible 的
 `avpm --vault-id <id>`——无需提示即可正常工作。
 
+> **想用 keyring 后端（而非文件后端）？** 在有 GUI 的环境（桌面 / WSLg）里，
+> 默认（`login`）集合需要先被创建并解锁一次。直接运行 `avpm unlock`，它会
+> 通过一次 GUI 弹窗创建（缺失时）或解锁（锁定时）默认集合，之后 keyring 后端
+> 即可像 macOS 一样使用。纯无头环境（无 `DISPLAY`/`WAYLAND_DISPLAY`）无法
+> 非交互创建/解锁集合，请保持文件后端。详见
+> [troubleshooting](docs/troubleshooting.md#daemon-present-but-default-collection-missing-or-locked)。
+
 完整的诊断步骤、session cache 说明和无头环境替代方案请参见
 [`docs/troubleshooting.md`](docs/troubleshooting.md)。
 

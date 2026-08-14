@@ -8,6 +8,7 @@ Common issues and their solutions. If your problem isn't listed here, please
 ## Table of Contents
 
 - [WSL2 / Headless Linux: Secret Service unavailable](#wsl2--headless-linux-secret-service-unavailable)
+- [Daemon present but default collection missing or locked](#daemon-present-but-default-collection-missing-or-locked)
 - [Session cache warnings (`could not cache master passphrase`)](#session-cache-warnings-could-not-cache-master-passphrase)
 - [Ansible: "vault password client script did not find a secret"](#ansible-vault-password-client-script-did-not-find-a-secret)
 - [macOS: `cargo install` fails (rustc version too old)](#macos-cargo-install-fails-rustc-version-too-old)
@@ -111,6 +112,75 @@ gdbus call --session \
 If both commands succeed, `avpm unlock` / `avpm set` will cache the master
 passphrase correctly and subsequent non-interactive calls (`avpm-client
 --vault-id dev` from Ansible) will work without prompting.
+
+---
+
+## Daemon present but default collection missing or locked
+
+### Symptom
+
+The daemon is installed and running, yet keyring writes fail:
+
+```
+Error: keyring unavailable: Couldn't access platform storage:
+SS error: result not returned from SS API
+```
+
+or, from a non-interactive (Ansible) call when the collection exists but is
+locked:
+
+```
+Error: keyring is locked.
+  Hint: run `avpm unlock` to unlock the default collection
+```
+
+(exit code 6).
+
+### Root cause
+
+Two sub-cases, both specific to headless / WSL2 without a desktop login:
+
+1. **The default (`login`) collection was never created.** On a desktop the
+   collection is created and unlocked automatically at login (via PAM). On a
+   headless box or WSL2 nobody runs that step, so the `default` alias resolves
+   to nothing. avpm's underlying `keyring` crate cannot create it on its own,
+   so the write fails before any prompt can appear.
+2. **The collection exists but is locked** (e.g. the daemon restarted, or the
+   machine rebooted without a PAM login to unlock it). Reads/writes would need
+   a GUI unlock prompt, which a non-interactive Ansible call cannot answer —
+   avpm reports exit code 6 instead of blocking.
+
+### Fix
+
+**From a desktop or WSLg session** (where a GUI prompt can render), ready the
+collection in one step:
+
+```bash
+avpm unlock
+```
+
+This creates the default collection if it is absent and unlocks it if it is
+locked, via a one-time GUI prompt. Once ready, `avpm set`/`get` work without
+further prompts for the rest of the session, and the collection persists
+across reboots (only its *unlock* state is lost on reboot, so re-run
+`avpm unlock` after a restart).
+
+Alternatively, unlock the collection once via the **Seahorse** GUI
+(`sudo apt-get install -y seahorse`, then open "Passwords: Login").
+
+**On a pure headless box** (no GUI at all — no `DISPLAY`/`WAYLAND_DISPLAY`),
+the default collection cannot be created or unlocked non-interactively. Use
+the encrypted file backend instead:
+
+```bash
+mkdir -p ~/.config/avpm
+printf '[storage]\nbackend = "file"\n' >> ~/.config/avpm/config.toml
+avpm unlock   # set/verify the master passphrase once
+```
+
+The file backend encrypts `store.age` with a master passphrase cached in the
+non-persistent Secret Service *session* collection (which needs no GUI), so
+non-interactive Ansible calls work after `avpm unlock`.
 
 ---
 

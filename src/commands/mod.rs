@@ -27,7 +27,7 @@ use crate::config::{Config, StorageBackend};
 use crate::error::{Error, Result};
 use crate::index::VaultIndex;
 use crate::paths;
-use crate::vault::{master, AnyStore, FileStore, KeyringStore, VaultError, VaultStore};
+use crate::vault::{master, AnyStore, FileStore, KeyringStore, VaultError};
 
 /// Resolve the effective command, accounting for the default-action form
 /// and the ansible client form.
@@ -60,36 +60,38 @@ fn resolve_command(cli: &Cli) -> Result<Command> {
 pub fn backend_kind(cfg: &Config) -> StorageBackend {
     match cfg.storage_config().backend {
         explicit @ (StorageBackend::Keyring | StorageBackend::File) => explicit,
-        StorageBackend::Auto => match probe_keyring(cfg.service()) {
-            Ok(()) => StorageBackend::Keyring,
-            Err(_) => StorageBackend::File,
-        },
+        StorageBackend::Auto => {
+            if keyring_usable_for_auto() {
+                StorageBackend::Keyring
+            } else {
+                StorageBackend::File
+            }
+        }
     }
 }
 
-/// Probe whether the OS keyring is reachable, using a **read-only** lookup.
+/// Decide whether the `Auto` backend should resolve to the keyring, based on
+/// the **persistent** existence of the default Secret Service collection —
+/// never its volatile lock state. Falling back to file merely because the
+/// collection is locked would split keyring/file data ("passwords look gone").
 ///
-/// We `get` an entry that is guaranteed not to exist. The outcome tells us
-/// about the keyring itself, not the entry:
-/// - `NotFound` (`keyring::Error::NoEntry`) — the keyring answered, so it is
-///   reachable and usable. Return `Ok(())`.
-/// - `KeyringUnavailable` / `KeyringFailed` — the keyring cannot be reached
-///   (no Secret Service daemon, locked, etc.). Return `Err`.
+/// Decision table:
+/// - daemon unreachable → file
+/// - collection exists (ready *or* locked) → keyring (the lock only decides
+///   whether a non-interactive caller must first run `avpm unlock`; see
+///   [`resolve_store`])
+/// - collection absent + a GUI is reachable (`DISPLAY`/`WAYLAND_DISPLAY`) →
+///   keyring (the first `set` creates it via a GUI prompt)
+/// - collection absent + no GUI → file (a headless box cannot create it
+///   non-interactively)
 ///
-/// Read-only probing has no side effects: unlike a write+delete probe, it
-/// never triggers a macOS Keychain authorization dialog and never leaves
-/// stray entries behind. It also makes `resolve_store` cheap to call on
-/// every command.
-fn probe_keyring(service: &str) -> Result<()> {
-    let store = KeyringStore::new(service);
-    match store.get("_avpm_probe_") {
-        // The keyring answered — either with NotFound (the probe entry
-        // doesn't exist, but the keyring itself is up) or, improbably, with
-        // a value. Both mean the keyring is reachable and usable.
-        Err(Error::Vault(VaultError::NotFound(_))) | Ok(_) => Ok(()),
-        // The keyring is unreachable — fall back to the file store.
-        Err(e) => Err(e),
-    }
+/// Side-effect-free: connect + `ReadAlias` + `Locked` property + env-var
+/// checks. Never prompts, so [`backend_kind`] stays cheap to call on every
+/// command. On non-Secret-Service platforms the probe always reports "ready",
+/// preserving existing macOS/Windows behavior.
+fn keyring_usable_for_auto() -> bool {
+    let status = crate::vault::ss::default_collection_status().ok();
+    crate::vault::ss::auto_prefers_keyring(status, crate::vault::ss::gui_available())
 }
 
 /// Environment-variable escape hatch for the file-backend master passphrase.
@@ -156,15 +158,14 @@ fn file_store() -> Result<FileStore> {
 ///
 /// - `Keyring`: use the OS keyring; failure propagates (explicit user choice).
 /// - `File`: use the encrypted file store (prompts/caches master passphrase).
-/// - `Auto` (default): probe the OS keyring with a read-only lookup; if it is
-///   reachable use it, otherwise fall back to the encrypted file store.
+/// - `Auto` (default): use the keyring when its default collection exists (or
+///   can be created via a GUI on first `set`); otherwise fall back to file.
 ///
-/// `Auto` is **purely probe-driven**: the keyring is used whenever it answers,
-/// regardless of whether a `store.age` exists. A prior accidental `avpm
-/// unlock`/`set` that created `store.age` therefore never locks the user out
-/// of the keyring on a healthy system (macOS Keychain, Linux desktop). On
-/// headless boxes without a Secret Service daemon (WSL2 without a GUI), the
-/// probe fails and the file store is used as intended.
+/// For the keyring backend, a **locked** collection in a *non-interactive*
+/// call surfaces as [`VaultError::KeyringLocked`] (exit code 6) rather than
+/// blocking on a GUI prompt — Ansible can detect this and prompt the user to
+/// run `avpm unlock`. The lock state never causes a fallback to file (that
+/// would split keyring/file data); only *collection absence* can.
 pub fn resolve_store(cfg: &Config) -> Result<AnyStore> {
     // backend_kind already collapses Auto into Keyring/File, so we only ever
     // see those two here; Keyring is the natural default for the collapsed
@@ -172,6 +173,18 @@ pub fn resolve_store(cfg: &Config) -> Result<AnyStore> {
     match backend_kind(cfg) {
         StorageBackend::File => Ok(AnyStore::File(file_store()?)),
         StorageBackend::Keyring | StorageBackend::Auto => {
+            // A locked collection in a non-interactive call would otherwise
+            // block on a GUI unlock prompt (the keyring crate's access path can
+            // prompt). Surface it as a distinct exit code (6) and never fall
+            // back to file. Interactive calls proceed and let the keyring
+            // crate prompt on access.
+            let locked_non_interactive = matches!(
+                crate::vault::ss::default_collection_status(),
+                Ok(crate::vault::ss::DefaultCollectionStatus::ExistsLocked)
+            ) && !std::io::stdin().is_terminal();
+            if locked_non_interactive {
+                return Err(Error::Vault(VaultError::KeyringLocked));
+            }
             Ok(AnyStore::Keyring(KeyringStore::new(cfg.service())))
         }
     }

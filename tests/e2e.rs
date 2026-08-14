@@ -139,11 +139,17 @@ fn acceptance_flow_set_push_clone_pull_status() {
     let tmp = tempfile::TempDir::new().unwrap();
     let bare = bare_repo(tmp.path());
 
-    // Device 1: three vaults, then push.
+    // Device 1: three vaults, then push. Force the file backend so the flow is
+    // deterministic regardless of keyring state — on a GUI box with no default
+    // collection, `Auto` would otherwise pick the keyring and a non-interactive
+    // `set -g` would exit 6 instead of succeeding.
     let dev1 = tempfile::TempDir::new().unwrap();
     write_config(
         dev1.path(),
-        &BARE_GIT_CONFIG.replace("{remote}", &bare.display().to_string()),
+        &format!(
+            "[storage]\nbackend = \"file\"\n{}",
+            BARE_GIT_CONFIG.replace("{remote}", &bare.display().to_string())
+        ),
     );
     let dev_pw = set_and_get(dev1.path(), "dev");
     let prod_pw = set_and_get(dev1.path(), "prod");
@@ -201,7 +207,10 @@ fn acceptance_flow_set_push_clone_pull_status() {
     let dev2 = tempfile::TempDir::new().unwrap();
     write_config(
         dev2.path(),
-        &BARE_GIT_CONFIG.replace("{remote}", &bare.display().to_string()),
+        &format!(
+            "[storage]\nbackend = \"file\"\n{}",
+            BARE_GIT_CONFIG.replace("{remote}", &bare.display().to_string())
+        ),
     );
     let pull = avpm()
         .arg("sync")

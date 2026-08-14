@@ -1,16 +1,18 @@
 //! Backend selection & smart unlock integration tests.
 //!
-//! Covers the discussion-point-1 redesign:
+//! Covers the keyring-backend redesign (gaps 1a/1b/1c/2a):
 //!
-//! - `avpm unlock` on a keyring-capable system is a no-op: it must NOT create
+//! - `avpm unlock` on a keyring-capable system readies the default collection
+//!   (creating/unlocking it via a GUI prompt if needed) and must NOT create
 //!   `store.age` (the bug that previously locked users out of the keyring).
-//! - The `Auto` backend is purely probe-driven; a stray `store.age` no longer
-//!   forces the file backend when the keyring is reachable.
+//! - The `Auto` backend is decided by the **existence** of the default
+//!   collection (not a stray `store.age`); a pre-existing `store.age` does not
+//!   force the file backend when the keyring collection exists.
 //!
-//! These are deterministic on macOS (Keychain is always reachable). On
-//! headless Linux without a Secret Service daemon the keyring probe fails, so
-//! the "no store.age" assertion only holds when the keyring is up — the test
-//! gates on that.
+//! These are deterministic on macOS (no Secret Service — the collection probe
+//! always reports "ready"). On headless Linux without a usable default
+//! collection the keyring path isn't taken, so the assertions only fire when
+//! the keyring is usable — the tests gate on the reported message.
 
 use std::path::PathBuf;
 
@@ -30,12 +32,23 @@ fn store_age_path(dir: &std::path::Path) -> PathBuf {
     dir.join("data").join("avpm").join("store.age")
 }
 
-/// On a keyring-capable system, `avpm unlock` is a no-op and must not create
-/// `store.age`. This is the core regression guard for the smart-unlock redesign
-/// (previously, unlock always created the file, locking macOS users onto the
-/// file backend forever).
+/// On a keyring-capable system, `avpm unlock` readies the default collection
+/// and must not create `store.age`. This is the core regression guard (unlock
+/// previously created the file, locking macOS users onto the file backend).
+///
+/// Gated on the default collection already being ready, so the test never
+/// blocks on a GUI create/unlock prompt (which would happen on a WSLg box whose
+/// collection is absent or locked — that interactive path is exercised by the
+/// `#[ignore]`'d ss integration test instead).
 #[test]
 fn unlock_on_keyring_does_not_create_store_age() {
+    if !common::default_collection_is_ready() {
+        eprintln!(
+            "SKIPPED: default collection not ready (would prompt); \
+             keyring-path assertion is meaningful only when unlock is a no-op"
+        );
+        return;
+    }
     let dir = tempfile::TempDir::new().unwrap();
     let mut cmd = common::avpm();
     common::isolate(&mut cmd, dir.path());
@@ -46,37 +59,37 @@ fn unlock_on_keyring_does_not_create_store_age() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    // If the keyring was reachable, unlock reports the no-op message and
-    // store.age is absent. If the keyring was unreachable (headless), unlock
-    // prompts for a passphrase non-interactively and fails — that path is
-    // covered by the file-backend e2e tests instead.
-    let keyring_was_used = combined.contains("unlock is not needed");
-    if keyring_was_used {
-        assert!(
-            !store_age_path(dir.path()).exists(),
-            "unlock created store.age on a keyring-capable system (regression)"
-        );
-    }
+    assert!(
+        combined.contains("keyring backend ready"),
+        "expected the keyring path, got: {combined}"
+    );
+    assert!(
+        !store_age_path(dir.path()).exists(),
+        "unlock created store.age on a keyring-capable system (regression)"
+    );
 }
 
 /// T3 — a pre-existing `store.age` must NOT force the file backend when the
-/// keyring is reachable.
+/// keyring's default collection exists.
 ///
-/// The `Auto` backend is purely probe-driven (a read-only keyring lookup); the
-/// old `store.age exists ⇒ use file` heuristic was removed because it locked
-/// macOS users out of the keyring after a single accidental `unlock`. This test
-/// guards against that heuristic being reintroduced: with a stray `store.age`
-/// already on disk, the `Auto` path must still resolve to the keyring.
+/// `Auto` is decided by default-collection existence (gap 1b), not by the
+/// presence of `store.age`. This guards against the old `store.age exists ⇒ use
+/// file` heuristic being reintroduced: with a stray `store.age` already on disk,
+/// the `Auto` path must still resolve to the keyring when the collection exists.
 ///
-/// The assertion runs only when the keyring probe succeeds. On macOS, isolating
-/// `HOME` (required to place `store.age` without touching the real
-/// `~/Library/...`) breaks the Keychain, so the probe fails there and the test
-/// is a documented skip — mirroring the sibling test above. On Linux the Secret
-/// Service daemon is reached over D-Bus (independent of `HOME`), so `store.age`
-/// in the isolated data dir and a reachable keyring coexist and the assertion
-/// fires.
+/// The assertion fires only when the keyring path is taken. On macOS the
+/// collection probe always reports "ready" (no Secret Service), so the keyring
+/// path is taken and the assertion fires. On Linux it fires when a usable
+/// default collection exists; otherwise the test is a documented skip.
 #[test]
 fn stray_store_age_does_not_force_file_backend() {
+    if !common::default_collection_is_ready() {
+        eprintln!(
+            "SKIPPED: default collection not ready (would prompt); \
+             stray-store.age assertion is meaningful only when unlock is a no-op"
+        );
+        return;
+    }
     let dir = tempfile::TempDir::new().unwrap();
     // Pre-place a stray store.age — the removed heuristic would have picked the
     // file backend purely from this file existing.
@@ -94,19 +107,15 @@ fn stray_store_age_does_not_force_file_backend() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    if combined.contains("unlock is not needed") {
-        // Keyring was reached: Auto must STILL resolve to keyring despite the
-        // stray store.age, and the stray file must be left byte-for-byte
-        // untouched (not decrypted, not rewritten).
-        assert_eq!(
-            std::fs::read_to_string(store_age_path(dir.path())).unwrap(),
-            stray,
-            "unlock rewrote the stray store.age — Auto resolved to the file backend"
-        );
-    } else {
-        eprintln!(
-            "SKIPPED: keyring not reachable under isolated HOME (macOS); \
-             stray-store.age assertion is meaningful on Linux/Secret-Service"
-        );
-    }
+    assert!(
+        combined.contains("keyring backend ready"),
+        "expected the keyring path despite the stray store.age, got: {combined}"
+    );
+    // Auto must STILL resolve to keyring despite the stray store.age, and the
+    // stray file must be left byte-for-byte untouched (not decrypted/rewritten).
+    assert_eq!(
+        std::fs::read_to_string(store_age_path(dir.path())).unwrap(),
+        stray,
+        "unlock rewrote the stray store.age — Auto resolved to the file backend"
+    );
 }

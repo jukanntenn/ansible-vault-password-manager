@@ -45,6 +45,19 @@ pub enum VaultError {
     )]
     Locked,
 
+    /// Keyring backend: the default Secret Service collection is not ready
+    /// (locked, or absent and would need a GUI prompt to create), and the call
+    /// is non-interactive (so we cannot show a GUI prompt without blocking
+    /// Ansible / scripts). Maps to exit code 6 (distinct from the file backend's
+    /// `Locked` exit 5 and from `KeyringUnavailable`'s exit 1). Never triggers a
+    /// fallback to the file backend — that would split data.
+    #[error(
+        "keyring is not ready (locked or no default collection).\n  \
+             Hint: run `avpm unlock` to create/unlock the default collection\n  \
+             (then re-run your command)"
+    )]
+    KeyringLocked,
+
     /// File backend: `store.age` could not be decrypted (wrong passphrase or
     /// corrupted file). Maps to exit code 4 (shared with sync decrypt failures).
     #[error("store decryption failed (wrong master passphrase or corrupted store)")]
@@ -98,8 +111,15 @@ pub fn keyring_hint() -> &'static str {
           [boot]\n\
           systemd=true\n\
         Then run `wsl --shutdown` from Windows and reopen.\n\n\
-     3. Daemon present but login collection locked (needs a GUI):\n\n\
-        Install seahorse and unlock once via the GUI, or use the headless\n\
-        session-collection workaround described in docs/troubleshooting.md.\n\n\
-     See docs/troubleshooting.md for full diagnostics and step-by-step setup."
+     3. Daemon present but the default (login) collection is missing or\n\
+        locked (error: \"result not returned from SS API\", or exit code 6):\n\n\
+        The collection must exist and be unlocked before avpm can store\n\
+        passwords in the keyring. From a desktop or WSLg session run:\n\n\
+          avpm unlock\n\n\
+        This creates the default collection (if absent) and unlocks it (if\n\
+        locked) via a one-time GUI prompt. If you have no GUI at all (pure\n\
+        headless), use the encrypted file backend instead:\n\n\
+          mkdir -p ~/.config/avpm && printf '[storage]\\nbackend = \"file\"\\n' \\\n\
+            >> ~/.config/avpm/config.toml\n\n\
+        See docs/troubleshooting.md for full diagnostics and step-by-step setup."
 }

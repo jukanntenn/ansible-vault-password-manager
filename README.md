@@ -79,6 +79,15 @@ the session collection (non-persistent, no GUI required) and subsequent
 `avpm` calls — including Ansible's `avpm --vault-id <id>` — work without
 prompting.
 
+> **Want the keyring backend (not the file backend)?** In a GUI environment
+> (desktop / WSLg) the default (`login`) collection must be created and unlocked
+> once. Just run `avpm unlock` — it creates the default collection (if absent)
+> and unlocks it (if locked) via a one-time GUI prompt, after which the keyring
+> backend behaves like macOS. On a pure headless box (no `DISPLAY` /
+> `WAYLAND_DISPLAY`) the collection cannot be created/unlocked non-interactively,
+> so keep the file backend. See
+> [troubleshooting](docs/troubleshooting.md#daemon-present-but-default-collection-missing-or-locked).
+
 See [`docs/troubleshooting.md`](docs/troubleshooting.md) for full diagnostics,
 the session cache explanation, and alternative headless workarounds.
 

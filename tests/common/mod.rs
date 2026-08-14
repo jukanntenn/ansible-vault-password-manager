@@ -137,6 +137,38 @@ pub fn restore_cache(previous: Option<String>) {
     }
 }
 
+/// Is the Secret Service default collection present and unlocked — i.e. would
+/// `avpm unlock` on the keyring backend be a non-prompting no-op?
+///
+/// Used to gate keyring-path assertions in integration tests so they never
+/// block on a GUI create/unlock prompt (which happens on a WSLg box whose
+/// default collection is absent or locked). On macOS there is no Secret
+/// Service: the keyring path is always taken and `ensure_default_collection`
+/// is a no-op, so this reports `true`.
+pub fn default_collection_is_ready() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        true
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        use secret_service::blocking::SecretService;
+        use secret_service::EncryptionType;
+        let Ok(ss) = SecretService::connect(EncryptionType::Dh) else {
+            return false; // no daemon → Auto resolves to the file backend
+        };
+        // `get_default_collection` errs (NoResult) when the alias is absent;
+        // an alias pointing at a since-deleted collection makes `is_locked`
+        // error — both mean "not ready" (would prompt or fall back). Bind the
+        // match so the temporary collection result drops before `ss`.
+        let ready = match ss.get_default_collection() {
+            Ok(col) => matches!(col.is_locked(), Ok(false)),
+            Err(_) => false,
+        };
+        ready
+    }
+}
+
 /// Is `script` (pty wrapper) available? (runtime-skip gate for the
 /// interactive-unlock test; works on util-linux and BSD.)
 #[cfg(target_os = "linux")]

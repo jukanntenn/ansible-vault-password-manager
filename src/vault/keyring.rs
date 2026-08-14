@@ -46,6 +46,13 @@ impl VaultStore for KeyringStore {
 
     #[instrument(skip(self, secret), fields(service = %self.service, vault_id = %vault_id, password_len = secret.len()))]
     fn set(&self, vault_id: &str, secret: &VaultSecret) -> Result<()> {
+        // The `keyring` crate cannot create the default Secret Service
+        // collection when absent (it only re-reads the alias), so every write
+        // would fail with "result not returned from SS API" on a fresh
+        // headless/WSL2 box. Ensure the collection exists (and is unlocked)
+        // first, directly via the Secret Service; the keyring crate then
+        // writes into the now-existing collection. No-op on macOS/Windows.
+        crate::vault::ss::ensure_default_collection()?;
         let entry = self.entry(vault_id)?;
         entry
             .set_password(secret.as_str())

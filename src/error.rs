@@ -12,6 +12,7 @@
 //! - `3` configuration error
 //! - `4` decryption failure (sync or file-store)
 //! - `5` file store locked (run `avpm unlock`)
+//! - `6` keyring backend locked (run `avpm unlock`; non-interactive only)
 
 use crate::config::ConfigError;
 use crate::sync::SyncError;
@@ -56,6 +57,7 @@ impl Error {
             | Error::Decrypt(_)
             | Error::Vault(VaultError::StoreDecrypt) => 4,
             Error::Vault(VaultError::Locked) => 5,
+            Error::Vault(VaultError::KeyringLocked) => 6,
             _ => 1,
         }
     }
@@ -102,6 +104,14 @@ mod tests {
         // Distinct from exit 2 so ansible/non-interactive callers can tell
         // "locked" from "vault-id absent".
         assert_eq!(Error::Vault(VaultError::Locked).exit_code(), 5);
+    }
+
+    #[test]
+    fn keyring_locked_maps_to_exit_6() {
+        // Distinct from the file backend's Locked (exit 5) so non-interactive
+        // callers can tell "keyring collection locked" from "file store locked",
+        // and from generic keyring unavailability (exit 1).
+        assert_eq!(Error::Vault(VaultError::KeyringLocked).exit_code(), 6);
     }
 
     #[test]

@@ -14,6 +14,7 @@ pub mod master;
 #[cfg(any(test, feature = "testing"))]
 pub mod mock;
 pub mod secret;
+pub mod ss;
 pub mod store;
 
 pub use error::VaultError;
