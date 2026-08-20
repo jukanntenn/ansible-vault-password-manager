@@ -9,6 +9,7 @@ Common issues and their solutions. If your problem isn't listed here, please
 
 - [WSL2 / Headless Linux: Secret Service unavailable](#wsl2--headless-linux-secret-service-unavailable)
 - [Daemon present but default collection missing or locked](#daemon-present-but-default-collection-missing-or-locked)
+- [GUI prompt dismissed on WSL2](#gui-prompt-dismissed-on-wsl2)
 - [Session cache warnings (`could not cache master passphrase`)](#session-cache-warnings-could-not-cache-master-passphrase)
 - [Ansible: "vault password client script did not find a secret"](#ansible-vault-password-client-script-did-not-find-a-secret)
 - [macOS: `cargo install` fails (rustc version too old)](#macos-cargo-install-fails-rustc-version-too-old)
@@ -136,6 +137,10 @@ Error: keyring is locked.
 
 (exit code 6).
 
+On some WSL2 boxes the failure instead surfaces as an opaque
+`SS error: prompt dismissed` during `avpm unlock` — see
+["GUI prompt dismissed on WSL2"](#gui-prompt-dismissed-on-wsl2) below.
+
 ### Root cause
 
 Two sub-cases, both specific to headless / WSL2 without a desktop login:
@@ -147,30 +152,29 @@ Two sub-cases, both specific to headless / WSL2 without a desktop login:
    so the write fails before any prompt can appear.
 2. **The collection exists but is locked** (e.g. the daemon restarted, or the
    machine rebooted without a PAM login to unlock it). Reads/writes would need
-   a GUI unlock prompt, which a non-interactive Ansible call cannot answer —
-   avpm reports exit code 6 instead of blocking.
+   a password; a non-interactive Ansible call cannot answer — avpm reports
+   exit code 6 instead of blocking.
 
 ### Fix
 
-**From a desktop or WSLg session** (where a GUI prompt can render), ready the
-collection in one step:
+Run:
 
 ```bash
 avpm unlock
 ```
 
-This creates the default collection if it is absent and unlocks it if it is
-locked, via a one-time GUI prompt. Once ready, `avpm set`/`get` work without
-further prompts for the rest of the session, and the collection persists
-across reboots (only its *unlock* state is lost on reboot, so re-run
-`avpm unlock` after a restart).
+This prompts for the OS keyring password **in the terminal** and drives
+gnome-keyring's control socket — the exact mechanism a desktop's PAM login
+uses, with no GUI involved. It creates the default collection if absent (you
+choose its password then; it is separate from your vault passwords and from
+the sync master passphrase) and unlocks it if locked (up to three attempts on
+a wrong password). It works on WSL2 and pure headless boxes alike; after each
+reboot you simply re-run `avpm unlock` once.
 
-Alternatively, unlock the collection once via the **Seahorse** GUI
-(`sudo apt-get install -y seahorse`, then open "Passwords: Login").
-
-**On a pure headless box** (no GUI at all — no `DISPLAY`/`WAYLAND_DISPLAY`),
-the default collection cannot be created or unlocked non-interactively. Use
-the encrypted file backend instead:
+For Secret Service providers *without* a control socket (KeePassXC, KWallet),
+`avpm unlock` falls back to the provider's own one-time GUI prompt — run it
+from a desktop / WSLg session for those. With no GUI and no control socket
+there is no way to create the collection; use the encrypted file backend:
 
 ```bash
 mkdir -p ~/.config/avpm
@@ -181,6 +185,54 @@ avpm unlock   # set/verify the master passphrase once
 The file backend encrypts `store.age` with a master passphrase cached in the
 non-persistent Secret Service *session* collection (which needs no GUI), so
 non-interactive Ansible calls work after `avpm unlock`.
+
+---
+
+## GUI prompt dismissed on WSL2
+
+### Symptom
+
+`avpm unlock` (or `secret-tool store`) fails immediately with:
+
+```
+Error: keyring unavailable: create collection failed: SS error: prompt dismissed
+```
+
+and no dialog ever appeared. This is the historical failure mode that made
+`avpm unlock` depend on a GUI at all — avpm's terminal bootstrap (above) now
+bypasses it entirely, but the underlying system defect is worth understanding
+if you *do* want GUI prompts (e.g. for Seahorse or non-gnome-keyring
+providers).
+
+### Root cause
+
+The GNOME keyring shows its dialogs via `gcr-prompter`, a **D-Bus-activated**
+process. D-Bus-activated processes inherit the *bus daemon's* environment —
+not your shell's. On WSL2 nothing plays display manager, so a session bus
+started at boot has no `DISPLAY`, and the prompter dies on startup:
+
+```
+$ journalctl --user | grep gcr-prompter
+... gcr-prompter[1234]: cannot open display:
+... gnome-keyring-daemon[1235]: couldn't initialize prompt: ...
+```
+
+(note the empty value after "cannot open display:" — the variable is not set
+at all). The Secret Service then reports the dead prompt as "dismissed".
+
+### Fix
+
+Put your display variables into the bus activation environment — the job a
+display manager does at login:
+
+```bash
+dbus-update-activation-environment --systemd DISPLAY WAYLAND_DISPLAY
+```
+
+Run it once from a terminal that has `DISPLAY` / `WAYLAND_DISPLAY` set
+(WSLg sets both automatically). The repair lasts for the current WSL session;
+to make it permanent, add the line to `~/.profile`. avpm performs the same
+repair automatically (best-effort) before falling back to a GUI prompt path.
 
 ---
 

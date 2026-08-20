@@ -63,11 +63,13 @@ gdbus call --session \
 （非持久化，无需 GUI），后续的 `avpm` 调用——包括 Ansible 的
 `avpm --vault-id <id>`——无需提示即可正常工作。
 
-> **想用 keyring 后端（而非文件后端）？** 在有 GUI 的环境（桌面 / WSLg）里，
-> 默认（`login`）集合需要先被创建并解锁一次。直接运行 `avpm unlock`，它会
-> 通过一次 GUI 弹窗创建（缺失时）或解锁（锁定时）默认集合，之后 keyring 后端
-> 即可像 macOS 一样使用。纯无头环境（无 `DISPLAY`/`WAYLAND_DISPLAY`）无法
-> 非交互创建/解锁集合，请保持文件后端。详见
+> **想用 keyring 后端（而非文件后端）？** 运行一次 `avpm unlock`：它会在
+> **终端里**提示输入 OS keyring 密码，并驱动 gnome-keyring 的 control socket
+> （与桌面 PAM 登录相同的机制）——无需 GUI，WSL2 和纯无头环境同样可用。
+> 它会创建（缺失时）或解锁（锁定时）默认集合；重启后重新运行一次
+> `avpm unlock` 即可（每次会话输入一次密码，与桌面上的登录钥匙串一致）。
+> 对于没有 control socket 的 Secret Service 提供者（KeePassXC、KWallet），
+> 则改用一次性的 GUI 弹窗。详见
 > [troubleshooting](docs/troubleshooting.md#daemon-present-but-default-collection-missing-or-locked)。
 
 完整的诊断步骤、session cache 说明和无头环境替代方案请参见
@@ -113,8 +115,9 @@ avpm config init           # 交互式初始化配置
 avpm config path           # 打印配置文件路径
 avpm config edit           # 用 $EDITOR 打开配置
 
-# 文件存储后端（无 keyring 环境，如无头 WSL2）
-avpm unlock                # keyring 后端：无操作；file 后端：缓存主口令
+# 为非交互使用解锁
+avpm unlock                # keyring 后端：创建/解锁 OS keyring 集合（终端提示输密码）；
+                           # file 后端：为本会话缓存主口令
 ```
 
 ### Ansible 集成

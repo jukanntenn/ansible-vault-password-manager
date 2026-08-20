@@ -91,11 +91,10 @@ pub enum VaultError {
 ///    Install `gnome-keyring` (it ships the `.service` file that lets D-Bus
 ///    auto-start `gnome-keyring-daemon`).
 ///
-/// 2. **Daemon present but `login` collection missing/locked** — GNOME Keyring
-///    needs a GUI prompt to create or unlock the `login` collection. On a
-///    headless box that prompt never appears, so the collection stays absent.
-///    The session collection (non-persistent, no GUI) is an alternative that
-///    avpm uses for its master-passphrase cache.
+/// 2. **Daemon present but `login` collection missing/locked** — run
+///    `avpm unlock`: it prompts for the keyring password in the terminal and
+///    drives gnome-keyring's control socket (works headless; no GUI needed),
+///    falling back to a GUI prompt for other Secret Service providers.
 ///
 /// See `docs/troubleshooting.md` for the full walkthrough.
 #[must_use]
@@ -114,11 +113,13 @@ pub fn keyring_hint() -> &'static str {
      3. Daemon present but the default (login) collection is missing or\n\
         locked (error: \"result not returned from SS API\", or exit code 6):\n\n\
         The collection must exist and be unlocked before avpm can store\n\
-        passwords in the keyring. From a desktop or WSLg session run:\n\n\
+        passwords in the keyring. Run:\n\n\
           avpm unlock\n\n\
-        This creates the default collection (if absent) and unlocks it (if\n\
-        locked) via a one-time GUI prompt. If you have no GUI at all (pure\n\
-        headless), use the encrypted file backend instead:\n\n\
+        It prompts for the keyring password in the terminal and sets the\n\
+        collection up without any GUI (gnome-keyring control socket); other\n\
+        Secret Service providers use a one-time GUI prompt instead. If you\n\
+        prefer not to use the OS keyring at all, switch to the encrypted\n\
+        file backend:\n\n\
           mkdir -p ~/.config/avpm && printf '[storage]\\nbackend = \"file\"\\n' \\\n\
             >> ~/.config/avpm/config.toml\n\n\
         See docs/troubleshooting.md for full diagnostics and step-by-step setup."

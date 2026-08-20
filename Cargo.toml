@@ -56,6 +56,11 @@ keyring = { version = "4", features = ["v1"] }
 # blocking Secret Service calls.
 secret-service = { version = "5", features = ["rt-async-io-crypto-rust"] }
 zvariant = "5"
+# Direct zbus use (already in the tree via secret-service, same feature shape)
+# for org.freedesktop.DBus.UpdateActivationEnvironment — the repair for the
+# WSL2 defect where D-Bus-activated GUI prompters inherit a bus environment
+# without DISPLAY and die with "cannot open display" ("prompt dismissed").
+zbus = { version = "5", default-features = false, features = ["blocking-api"] }
 
 # === Encrypted sync (age) ===
 age = { version = "0.12", features = ["armor"] }

@@ -5,21 +5,24 @@
 //! - **Keyring backend** (explicit `Keyring`, or `Auto` that preferred it):
 //!   ensure the default collection exists and is unlocked. On a fresh
 //!   headless/WSL2 box the (`login`) default collection may be absent or
-//!   locked; this creates it (GUI prompt) or unlocks it (GUI prompt) so
-//!   subsequent reads/writes — including ansible's non-interactive
+//!   locked; this prompts for the keyring password **in the terminal** and
+//!   drives gnome-keyring's control socket (the PAM-login operation — no GUI
+//!   needed), falling back to a Secret Service GUI prompt for providers
+//!   without a control socket (KeePassXC, KWallet). Once ready, subsequent
+//!   reads/writes — including ansible's non-interactive
 //!   `avpm-client --vault-id <id>` — work without a prompt. It never creates
 //!   `store.age`, so a user who runs `avpm unlock` on a keyring-capable system
 //!   is not pulled onto the file backend.
 //!
 //! - **File backend** (explicit `backend = "file"`, or `Auto` with the daemon
-//!   up but no GUI): the file store encrypts `store.age` with a master
-//!   passphrase. `unlock` verifies (existing store) or sets (first run) that
-//!   passphrase and caches it in the session collection so subsequent
-//!   non-interactive calls — notably ansible's `avpm-client --vault-id <id>`
-//!   — can decrypt without prompting. It does **not** create an empty
-//!   `store.age`; the file is born naturally on the first real `set`. In the
-//!   `Auto`-no-GUI case a one-time nudge points the user at the keyring
-//!   backend.
+//!   up but no way to bootstrap the collection): the file store encrypts
+//!   `store.age` with a master passphrase. `unlock` verifies (existing store)
+//!   or sets (first run) that passphrase and caches it in the session
+//!   collection so subsequent non-interactive calls — notably ansible's
+//!   `avpm-client --vault-id <id>` — can decrypt without prompting. It does
+//!   **not** create an empty `store.age`; the file is born naturally on the
+//!   first real `set`. In the `Auto` no-bootstrap case a one-time nudge points
+//!   the user at the keyring backend.
 //!
 //! - **`Auto` with the daemon unreachable**: [`super::resolve_effective_backend`]
 //!   returns an error (with guidance) and `unlock` stops — the Secret Service
@@ -43,10 +46,12 @@ use super::{resolve_effective_backend, ResolvedBackend};
 pub async fn execute(cfg: &Config) -> Result<()> {
     match resolve_effective_backend(cfg)? {
         ResolvedBackend::Keyring => {
-            // Create the default collection if absent (GUI prompt) and unlock
-            // it if locked (GUI prompt). Idempotent: a ready collection is a
-            // no-op. This is the one command responsible for making the
-            // keyring backend usable after a daemon restart on WSL2/headless.
+            // Create the default collection if absent and unlock it if locked
+            // (terminal password over the gnome-keyring control socket; GUI
+            // prompt as the fallback for other providers). Idempotent: a ready
+            // collection is a no-op. This is the one command responsible for
+            // making the keyring backend usable after a daemon restart on
+            // WSL2/headless.
             crate::vault::ss::ensure_default_collection()?;
             eprintln!(
                 "keyring backend ready (OS keyring unlocked).\n  \
@@ -57,14 +62,18 @@ pub async fn execute(cfg: &Config) -> Result<()> {
             Ok(())
         }
         ResolvedBackend::AutoFileNoGui => {
-            // Daemon up, but no GUI to create the collection: the file backend
-            // works (the session collection caches the master passphrase). Nudge
-            // the user once that they could switch to the keyring backend.
+            // Daemon up, but the collection cannot be created here (no GUI to
+            // answer a prompt, no gnome-keyring control socket for terminal
+            // setup): the file backend works (the session collection caches
+            // the master passphrase). Nudge the user once that they could
+            // switch to the keyring backend.
             eprintln!(
-                "note: the OS keyring collection can't be created in this headless session, so\n\
-                 avpm is using the encrypted file backend. The master passphrase is still\n\
-                 session-cached (non-interactive calls work). To switch to the keyring backend,\n\
-                 run `avpm unlock` once from a GUI (desktop/WSLg) session."
+                "note: the OS keyring's default collection can't be created in this session\n\
+                 (no GUI for its prompt and no gnome-keyring control socket), so avpm is\n\
+                 using the encrypted file backend. The master passphrase is still\n\
+                 session-cached (non-interactive calls work). To switch to the keyring\n\
+                 backend, install gnome-keyring (control-socket setup) or run `avpm\n\
+                 unlock` once from a GUI (desktop/WSLg) session."
             );
             unlock_file_store().await
         }

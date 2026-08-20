@@ -14,12 +14,18 @@
 //! 3. **Interactive `avpm unlock`** (needs the util-linux `script` pty
 //!    wrapper; BSD/macOS `script` does not forward piped stdin the same way,
 //!    so this case is Linux-only).
+//! 4. **Interactive keyring bootstrap** (also pty-based, `#[ignore]`d because
+//!    it creates the *real* login keyring): `avpm unlock` with an absent
+//!    default collection and a gnome-keyring control socket prompts for the
+//!    keyring password in the terminal — no GUI.
 
 use std::path::Path;
 use std::process::Command as StdCommand;
 
 use assert_cmd::prelude::*;
 
+#[cfg(target_os = "linux")]
+use crate::common::default_collection_is_ready;
 #[cfg(target_os = "linux")]
 use crate::common::script_available;
 use crate::common::{
@@ -270,17 +276,33 @@ fn acceptance_flow_set_push_clone_pull_status() {
 // ---------------------------------------------------------------------------
 
 /// Run `cmd` under the util-linux `script` pty wrapper, feeding `input` on
-/// stdin. Linux-only: BSD/macOS `script` does not forward piped stdin the way
-/// this flow needs.
+/// stdin. The command goes through `-c` (a single shell string): util-linux
+/// ≥ 2.39 rejects extra positional arguments after the typescript file, and
+/// BSD `script` accepts `-c` too. Linux-only: BSD/macOS `script` does not
+/// forward piped stdin the way this flow needs.
 #[cfg(target_os = "linux")]
 fn script_pipe(cmd: &mut StdCommand, input: &str) -> std::process::Output {
     use std::io::Write;
     use std::process::Stdio;
+
+    fn shell_quote(s: &str) -> String {
+        if s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/-_.".contains(&b))
+        {
+            s.to_string()
+        } else {
+            format!("'{}'", s.replace('\'', "'\\''"))
+        }
+    }
+
+    let command_line = std::iter::once(shell_quote(&cmd.get_program().to_string_lossy()))
+        .chain(cmd.get_args().map(|a| shell_quote(&a.to_string_lossy())))
+        .collect::<Vec<_>>()
+        .join(" ");
+
     let mut script = StdCommand::new("script");
     script
-        .args(["-q", "/dev/null"])
-        .arg(cmd.get_program())
-        .args(cmd.get_args())
+        .args(["-q", "-c", &command_line, "/dev/null"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -341,7 +363,18 @@ fn unlock_interactive_flow() {
         "unexpected cache warning: {combined}"
     );
 
-    // A3: second run verifies with the existing store.
+    // A2: a real `set` births store.age (the cached passphrase makes it
+    // non-interactive) — unlock never creates the file itself, by design.
+    let mut set_cmd = avpm();
+    set_cmd.args(["set", "dev", "-g"]);
+    isolate(&mut set_cmd, dev.path());
+    let set_out = set_cmd.output().unwrap();
+    assert!(
+        set_out.status.success(),
+        "set should succeed via the cached passphrase: {set_out:?}"
+    );
+
+    // A3: second run verifies against the now-existing store.
     let second = script_pipe(&mut cmd, "master123\n");
     let combined = format!(
         "{}{}",
@@ -354,4 +387,68 @@ fn unlock_interactive_flow() {
     );
 
     restore_cache(previous);
+}
+
+/// Interactive keyring bootstrap over a pty: with the default collection
+/// absent and a gnome-keyring control socket present (a fresh WSL2/headless
+/// box), `avpm unlock` prompts for the keyring password **in the terminal**
+/// (no GUI) and creates the login keyring — the fix for the "prompt
+/// dismissed" dead end.
+///
+/// `#[ignore]`d because it creates the user's *real* login keyring with the
+/// password fed here. Run manually on a box whose default collection is
+/// absent (a fresh WSL2 works well):
+///
+/// ```sh
+/// cargo test --test integration keyring_bootstrap_interactive -- --ignored
+/// ```
+///
+/// Afterwards the keyring password is `boot-123`; delete
+/// `~/.local/share/keyrings/login.keyring` (and restart the daemon) to reset.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "creates the real login keyring (terminal prompt); run on a box whose default collection is absent"]
+fn keyring_bootstrap_interactive() {
+    if !script_available() {
+        eprintln!("SKIPPED: `script` pty wrapper not available");
+        return;
+    }
+    if !avpm::vault::gkr::control_available() {
+        eprintln!("SKIPPED: no gnome-keyring control socket");
+        return;
+    }
+    if default_collection_is_ready() {
+        eprintln!("SKIPPED: default collection already ready (bootstrap would be a no-op)");
+        return;
+    }
+
+    let dev = tempfile::TempDir::new().unwrap();
+    let mut cmd = avpm();
+    cmd.arg("unlock");
+    isolate(&mut cmd, dev.path());
+
+    // Feed the retry ladder: an empty password, then a mismatched pair, then
+    // a matching pair — one run exercises the full prompt loop.
+    let out = script_pipe(&mut cmd, "\nmismatch1\nboot-123\nboot-123\nboot-123\n");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("Set OS keyring password:"),
+        "expected the terminal keyring-password prompt, got: {combined}"
+    );
+    assert!(
+        combined.contains("must not be empty"),
+        "expected the empty-password retry, got: {combined}"
+    );
+    assert!(
+        combined.contains("passwords do not match"),
+        "expected the mismatch retry, got: {combined}"
+    );
+    assert!(
+        combined.contains("keyring backend ready"),
+        "expected the ready message, got: {combined}"
+    );
 }

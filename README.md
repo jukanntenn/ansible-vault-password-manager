@@ -79,13 +79,15 @@ the session collection (non-persistent, no GUI required) and subsequent
 `avpm` calls — including Ansible's `avpm --vault-id <id>` — work without
 prompting.
 
-> **Want the keyring backend (not the file backend)?** In a GUI environment
-> (desktop / WSLg) the default (`login`) collection must be created and unlocked
-> once. Just run `avpm unlock` — it creates the default collection (if absent)
-> and unlocks it (if locked) via a one-time GUI prompt, after which the keyring
-> backend behaves like macOS. On a pure headless box (no `DISPLAY` /
-> `WAYLAND_DISPLAY`) the collection cannot be created/unlocked non-interactively,
-> so keep the file backend. See
+> **Want the keyring backend (not the file backend)?** Run `avpm unlock` once:
+> it prompts for the OS keyring password **in the terminal** and drives
+> gnome-keyring's control socket (the same PAM-login mechanism a desktop uses)
+> — no GUI needed, so this works on WSL2 and pure headless boxes alike. It
+> creates the default collection (if absent) and unlocks it (if locked); after
+> a reboot you just re-run `avpm unlock` (the password is asked once per
+> session, like a login keyring on any desktop). For Secret Service providers
+> without a control socket (KeePassXC, KWallet) a one-time GUI prompt is used
+> instead. See
 > [troubleshooting](docs/troubleshooting.md#daemon-present-but-default-collection-missing-or-locked).
 
 See [`docs/troubleshooting.md`](docs/troubleshooting.md) for full diagnostics,
@@ -131,8 +133,9 @@ avpm config init           # interactive setup
 avpm config path           # print the config file path
 avpm config edit           # open the config in $EDITOR
 
-# File-store backend (keyring-less environments, e.g. headless WSL2)
-avpm unlock                # keyring backend: no-op; file backend: cache the master passphrase
+# Unlock for non-interactive use
+avpm unlock                # keyring backend: create/unlock the OS keyring collection (terminal prompt);
+                           # file backend: cache the master passphrase for this session
 ```
 
 ### Ansible integration
@@ -184,10 +187,11 @@ avpm stores vaults in one of two backends, selected by `[storage].backend`
   `avpm unlock` once per session to cache the master passphrase; non-
   interactive calls without a cache exit **5** (`Locked`).
 - **`auto`** (default) — probe the OS keyring with a read-only lookup; use it
-  when reachable, otherwise fall back to the file store. The probe is purely
-  availability-driven — a stray `store.age` never forces the file backend when
-  the keyring is up, so macOS/desktop users are never accidentally pulled off
-  the keyring.
+  when reachable (including an absent-but-bootstrappable collection: GUI for
+  the prompt, or a gnome-keyring control socket for terminal setup), otherwise
+  fall back to the file store. The probe is purely availability-driven — a
+  stray `store.age` never forces the file backend when the keyring is up, so
+  macOS/desktop users are never accidentally pulled off the keyring.
 
 ### Sync configuration
 

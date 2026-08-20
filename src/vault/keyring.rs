@@ -50,8 +50,9 @@ impl VaultStore for KeyringStore {
         // collection when absent (it only re-reads the alias), so every write
         // would fail with "result not returned from SS API" on a fresh
         // headless/WSL2 box. Ensure the collection exists (and is unlocked)
-        // first, directly via the Secret Service; the keyring crate then
-        // writes into the now-existing collection. No-op on macOS/Windows.
+        // first — terminal password via the gnome-keyring control socket when
+        // available, GUI prompt otherwise; the keyring crate then writes into
+        // the now-existing collection. No-op on macOS/Windows.
         crate::vault::ss::ensure_default_collection()?;
         let entry = self.entry(vault_id)?;
         entry

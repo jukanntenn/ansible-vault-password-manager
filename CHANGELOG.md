@@ -26,6 +26,27 @@ Vault passwords, with end-to-end encrypted multi-device sync.
   password generation, a full-screen TUI, and interactive config setup.
 - **One-liner install** — `cargo install --git https://github.com/jukanntenn/ansible-vault-password-manager --locked`.
 
+### Changed (WSL2 keyring bootstrap)
+
+- **Terminal keyring bootstrap (no GUI)**: `avpm unlock` now prompts for the
+  OS keyring password in the terminal and drives gnome-keyring's control
+  socket — the same PAM-login mechanism a desktop uses at login — to create
+  the default collection (if absent) or unlock it (if locked, up to three
+  attempts on a wrong password). This works on WSL2 and pure headless boxes,
+  fixing the opaque `SS error: prompt dismissed` dead end (root cause: the
+  D-Bus-activated `gcr-prompter` inherits a bus environment without `DISPLAY`,
+  so no dialog can appear). Providers without a control socket (KeePassXC,
+  KWallet) keep the one-time GUI prompt, now preceded by a best-effort
+  `org.freedesktop.DBus.UpdateActivationEnvironment` repair that exports
+  `DISPLAY`/`WAYLAND_DISPLAY` into the bus activation environment.
+- **`Auto` picks the keyring on headless gnome-keyring boxes**: an absent
+  default collection no longer requires a GUI to be creatable — a gnome-keyring
+  control socket is enough, so headless WSL2 resolves to the keyring backend
+  instead of the file backend.
+- **TUI prompts before the alternate screen**: `avpm tui` readies the keyring
+  (terminal prompt if needed) before opening the TUI, so a password prompt can
+  never garble the full-screen interface mid-session.
+
 ### Changed (architecture rebuild)
 
 - **Dual binaries**: `avpm` (manager) + **`avpm-client`** (Ansible entry point).

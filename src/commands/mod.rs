@@ -28,7 +28,7 @@ use crate::config::{Config, StorageBackend};
 use crate::error::{Error, Result};
 use crate::index::VaultIndex;
 use crate::paths;
-use crate::vault::{master, ss, AnyStore, FileStore, KeyringStore, VaultError};
+use crate::vault::{gkr, master, ss, AnyStore, FileStore, KeyringStore, VaultError};
 
 /// Resolve the effective command, accounting for the default-action form
 /// and the ansible client form.
@@ -64,18 +64,22 @@ enum ResolvedBackend {
     /// Encrypted file store, explicitly chosen (`backend = "file"`). The user
     /// opted in with eyes open; no guidance, no nudge.
     File,
-    /// Encrypted file store chosen by `Auto` because the daemon is up but no
-    /// GUI can create the collection. It works (the session collection caches
-    /// the master passphrase), but the user could upgrade to the keyring
-    /// backend — `avpm unlock` emits a one-time nudge in this case.
+    /// Encrypted file store chosen by `Auto` because the daemon is up but the
+    /// absent default collection cannot be created here — no GUI to answer a
+    /// prompt and no gnome-keyring control socket for terminal setup. It works
+    /// (the session collection caches the master passphrase), but the user
+    /// could upgrade to the keyring backend — `avpm unlock` emits a one-time
+    /// nudge in this case.
     AutoFileNoGui,
 }
 
 /// Pure `Auto` decision, factored out so the table is unit-testable without a
 /// live daemon. Composes [`ss::auto_prefers_keyring`] and adds the daemon-down
 /// distinction that the old silent fallback lost:
-/// - keyring preferred (collection ready/locked, or absent + GUI) → [`AutoDecision::Keyring`]
-/// - daemon up but collection absent + no GUI → [`AutoDecision::AutoFileNoGui`]
+/// - keyring preferred (collection ready/locked, or absent + something can
+///   create it) → [`AutoDecision::Keyring`]
+/// - daemon up but collection absent + no bootstrap option →
+///   [`AutoDecision::AutoFileNoGui`]
 /// - daemon unreachable → [`AutoDecision::NeedsGuidance`] (a hard stop, not a
 ///   silent file fallback: without the daemon the master passphrase can't be
 ///   session-cached, so non-interactive/ansible calls would fail)
@@ -87,8 +91,12 @@ enum AutoDecision {
 }
 
 #[must_use]
-fn auto_decide(status: Option<ss::DefaultCollectionStatus>, gui: bool) -> AutoDecision {
-    if ss::auto_prefers_keyring(status, gui) {
+fn auto_decide(
+    status: Option<ss::DefaultCollectionStatus>,
+    gui: bool,
+    headless_bootstrap: bool,
+) -> AutoDecision {
+    if ss::auto_prefers_keyring(status, gui, headless_bootstrap) {
         AutoDecision::Keyring
     } else if status.is_none() {
         AutoDecision::NeedsGuidance
@@ -109,11 +117,16 @@ fn resolve_effective_backend(cfg: &Config) -> Result<ResolvedBackend> {
 }
 
 /// `Auto` resolution against a live probe. Daemon-down → guidance error (not a
-/// silent file fallback); daemon-up + no GUI → file backend (works, via the
-/// session collection); otherwise → keyring.
+/// silent file fallback); daemon-up with no way to bootstrap the collection
+/// (neither GUI nor gnome-keyring control socket) → file backend (works, via
+/// the session collection); otherwise → keyring.
 fn resolve_auto_backend() -> Result<ResolvedBackend> {
     let status = ss::default_collection_status();
-    let decision = auto_decide(status.as_ref().ok().copied(), ss::gui_available());
+    let decision = auto_decide(
+        status.as_ref().ok().copied(),
+        ss::gui_available(),
+        gkr::control_available(),
+    );
     match decision {
         AutoDecision::Keyring => Ok(ResolvedBackend::Keyring),
         AutoDecision::AutoFileNoGui => Ok(ResolvedBackend::AutoFileNoGui),
@@ -333,7 +346,15 @@ pub async fn dispatch(cli: &Cli, cfg: &Config) -> Result<()> {
         }
         Command::Show { vault_id } => show::execute(cfg, &store, &vault_id).await,
         Command::Rename { from, to } => rename::execute(&store, &index, &from, &to).await,
-        Command::Tui => tui_cmd::execute(cfg, &store, &index).await,
+        Command::Tui => {
+            // Front-load any keyring bootstrap prompt while the terminal is
+            // still plain — a password prompt (or GUI dialog trigger) from
+            // inside the TUI would garble the screen.
+            if matches!(store, AnyStore::Keyring(_)) {
+                crate::vault::ss::ensure_default_collection()?;
+            }
+            tui_cmd::execute(cfg, &store, &index).await
+        }
         Command::Sync { .. } | Command::List | Command::Config { .. } | Command::Unlock => {
             unreachable!("handled above")
         }
@@ -363,28 +384,45 @@ mod tests {
 
     /// The `Auto` decision table. The `None` cells are the daemon-floor guard:
     /// daemon unreachable must guide (hard stop), never silently fall back to
-    /// file. `(Some(Absent), false)` is the daemon-up-no-GUI file path.
+    /// file. `(Some(Absent), gui=false, control=true)` is the headless
+    /// keyring path: a gnome-keyring control socket bootstraps the collection
+    /// from the terminal, no GUI needed.
     #[test]
     fn auto_decide_decision_table() {
-        // Keyring-preferred (collection ready/locked, or absent + GUI).
-        assert_eq!(auto_decide(Some(S::Ready), false), AutoDecision::Keyring);
-        assert_eq!(auto_decide(Some(S::Ready), true), AutoDecision::Keyring);
+        // Keyring-preferred (collection ready/locked; or absent + GUI; or
+        // absent + control socket).
         assert_eq!(
-            auto_decide(Some(S::ExistsLocked), false),
+            auto_decide(Some(S::Ready), false, false),
             AutoDecision::Keyring
         );
-        assert_eq!(auto_decide(Some(S::Absent), true), AutoDecision::Keyring);
-
-        // Daemon up, collection absent, no GUI → file backend (works; nudged
-        // in `avpm unlock`).
         assert_eq!(
-            auto_decide(Some(S::Absent), false),
+            auto_decide(Some(S::Ready), true, true),
+            AutoDecision::Keyring
+        );
+        assert_eq!(
+            auto_decide(Some(S::ExistsLocked), false, false),
+            AutoDecision::Keyring
+        );
+        assert_eq!(
+            auto_decide(Some(S::Absent), true, false),
+            AutoDecision::Keyring
+        );
+        assert_eq!(
+            auto_decide(Some(S::Absent), false, true),
+            AutoDecision::Keyring
+        );
+
+        // Daemon up, collection absent, no GUI and no control socket (e.g. a
+        // non-gnome-keyring provider on a headless box) → file backend (works;
+        // nudged in `avpm unlock`).
+        assert_eq!(
+            auto_decide(Some(S::Absent), false, false),
             AutoDecision::AutoFileNoGui
         );
 
         // Daemon DOWN → guidance, never silent file. Regression guard for
         // machine 2 (no Secret Service at all).
-        assert_eq!(auto_decide(None, false), AutoDecision::NeedsGuidance);
-        assert_eq!(auto_decide(None, true), AutoDecision::NeedsGuidance);
+        assert_eq!(auto_decide(None, false, false), AutoDecision::NeedsGuidance);
+        assert_eq!(auto_decide(None, true, true), AutoDecision::NeedsGuidance);
     }
 }

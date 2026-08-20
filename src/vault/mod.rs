@@ -9,6 +9,7 @@
 
 pub mod error;
 pub mod file;
+pub mod gkr;
 pub mod keyring;
 pub mod master;
 #[cfg(any(test, feature = "testing"))]

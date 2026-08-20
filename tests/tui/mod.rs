@@ -35,6 +35,15 @@ use harness::{Key, TuiSession};
 /// The probe reads a guaranteed-nonexistent id (NoEntry) so it never prompts
 /// the macOS Keychain and never touches real data.
 fn tui_env_ok() -> bool {
+    // `avpm tui` bootstraps the keyring (terminal password prompt) before
+    // opening the alternate screen when the default collection is absent or
+    // locked — the prompt would eat the driver's keystrokes, so these tests
+    // require a ready collection. On macOS there is no Secret Service and
+    // this always reports ready.
+    if !crate::common::default_collection_is_ready() {
+        eprintln!("SKIPPED: default collection not ready (TUI would prompt at startup)");
+        return false;
+    }
     let mut cmd = Command::new(cargo_bin("avpm"));
     cmd.args(["--vault-id", "__tui_gate_probe__"])
         .stdin(Stdio::null())

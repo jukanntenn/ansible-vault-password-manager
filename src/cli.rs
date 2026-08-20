@@ -70,10 +70,11 @@ pub enum Command {
 
     /// Unlock the active backend for non-interactive use.
     ///
-    /// On the keyring backend (macOS Keychain / Linux Secret Service) this is a
-    /// no-op: the keyring is already unlocked at the OS level, so nothing is
-    /// cached and no `store.age` is created. On the file backend (keyring
-    /// unavailable, e.g. headless WSL2) it caches the master passphrase for
+    /// On the keyring backend this creates the OS keyring's default
+    /// collection if absent and unlocks it if locked — prompting for the
+    /// keyring password in the terminal (works on headless WSL2 with
+    /// gnome-keyring), or via a GUI prompt for other Secret Service
+    /// providers. On the file backend it caches the master passphrase for
     /// this session so ansible's `avpm-client --vault-id <id>` can decrypt
     /// without prompting.
     Unlock,

@@ -170,11 +170,12 @@ pub fn default_collection_is_ready() -> bool {
 }
 
 /// Is `script` (pty wrapper) available? (runtime-skip gate for the
-/// interactive-unlock test; works on util-linux and BSD.)
+/// interactive-unlock test; uses the `-c` command form that both util-linux
+/// and BSD accept — util-linux ≥ 2.39 rejects extra positional arguments.)
 #[cfg(target_os = "linux")]
 pub fn script_available() -> bool {
     Command::new("script")
-        .args(["-q", "/dev/null", "true"])
+        .args(["-q", "-c", "true", "/dev/null"])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)

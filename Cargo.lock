@@ -477,6 +477,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trycmd",
+ "zbus",
  "zeroize",
  "zvariant",
 ]
